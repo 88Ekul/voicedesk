@@ -1,0 +1,380 @@
+"""VoiceDesk entry point — loads config, starts tray icon, registers hotkey.
+
+Event-loop architecture
+-----------------------
+* **Main thread** — PyQt6 ``QApplication.exec()`` owns the main thread so the
+  overlay and menu widgets work correctly.
+* **Tray thread** — pystray runs in its own daemon thread (unchanged).
+* **Keyboard thread** — the ``keyboard`` library hooks run in their own thread.
+  Hotkey callbacks are fired from that thread; Qt operations are dispatched
+  thread-safely via signals or ``QTimer.singleShot``.
+* **Audio thread** — recording runs in a dedicated daemon thread.
+* **Transcription executor** — a single-worker ``ThreadPoolExecutor`` serialises
+  transcription + paste/save jobs.
+"""
+
+import concurrent.futures
+import logging
+import logging.handlers
+import ctypes
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import winsound
+
+import keyboard
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtWidgets import QApplication
+
+import audio
+import config_loader
+import hotkey as hotkey_module
+import menu as menu_module
+import overlay as overlay_module
+import paste
+import transcribe
+import tray as tray_module
+
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+LOG_FILE = os.path.join(LOG_DIR, "voicedesk.log")
+
+
+def _setup_logging() -> None:
+    if logging.getLogger().handlers:
+        return
+    os.makedirs(LOG_DIR, exist_ok=True)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setFormatter(fmt)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+
+    root.addHandler(file_handler)
+    root.addHandler(stream_handler)
+
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared state
+# ---------------------------------------------------------------------------
+
+_audio_thread: threading.Thread | None = None
+_audio_path: str | None = None
+_config: dict = {}
+_tray: tray_module.TrayIcon | None = None
+_recording_mode: str = "dictate"   # 'dictate' | 'inbox'
+
+_process_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="transcribe-paste"
+)
+_pending_future: concurrent.futures.Future | None = None
+
+
+class _Dispatcher(QObject):
+    """QObject that lives on the Qt main thread.
+
+    Emitting ``tap_signal`` from *any* thread delivers the connected slot on
+    the main thread because Qt queued-connection dispatch is used automatically
+    when the emitter and receiver live in different threads.  This is more
+    reliable than ``QTimer.singleShot`` which requires the *calling* thread to
+    have a running Qt event loop.
+    """
+
+    tap_signal = pyqtSignal()
+
+
+_dispatcher: _Dispatcher | None = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _beep(frequency: int, duration_ms: int) -> None:
+    threading.Thread(
+        target=winsound.Beep, args=(frequency, duration_ms), daemon=True
+    ).start()
+
+
+# ---------------------------------------------------------------------------
+# Recording pipeline
+# ---------------------------------------------------------------------------
+
+def _start_recording() -> None:
+    """Begin audio capture.  Safe to call from any thread."""
+    global _audio_thread, _audio_path, _pending_future
+
+    _audio_path = None
+
+    if _pending_future is not None and not _pending_future.done():
+        if _pending_future.cancel():
+            logger.info("Cancelled stale pending transcription job")
+
+    if _tray:
+        _tray.set_recording()
+
+    overlay_module.show_recording()
+    _beep(880, 120)
+
+    def _record() -> None:
+        global _audio_path, _pending_future
+        try:
+            _audio_path = audio.record_audio(
+                max_duration=_config.get("max_duration_seconds", 120),
+                device=_config.get("audio_device"),
+                volume_cb=overlay_module.update_volume,
+            )
+            # Max duration reached without an explicit stop.
+            if not audio._stop_event.is_set():
+                logger.info("Max duration reached — auto-triggering transcription")
+                _beep(440, 120)
+                overlay_module.show_transcribing()
+                if _tray:
+                    _tray.set_idle()
+                if _audio_path:
+                    path = _audio_path
+                    _audio_path = None
+                    _pending_future = _process_executor.submit(
+                        _process, path, _recording_mode
+                    )
+        except Exception as exc:
+            logger.error("Audio recording failed: %s", exc)
+            overlay_module.hide_overlay()
+
+    _audio_thread = threading.Thread(target=_record, daemon=True, name="audio-record")
+    _audio_thread.start()
+
+
+def _process(audio_file: str, mode: str) -> None:
+    """Transcribe and either paste or save to inbox.  Runs in serial executor."""
+    try:
+        text = transcribe.transcribe(audio_file, _config)
+        logger.info("Transcription (%s): %r", mode, text[:80])
+
+        if not text:
+            logger.info("Empty transcription — skipping paste")
+            _beep(220, 200)  # low single beep = nothing heard
+            return
+
+        if mode == "inbox":
+            inbox_path = _config.get(
+                "inbox_path",
+                os.path.expanduser("~/Documents/inbox"),
+            )
+            paste.save_to_inbox(text, inbox_path)
+        else:
+            paste.paste_text(text, auto_paste=_config.get("auto_paste", True))
+
+        _beep(660, 80)
+        _beep(880, 80)
+    except Exception as exc:
+        logger.error("Transcription/paste failed: %s", exc)
+    finally:
+        overlay_module.hide_overlay()
+        try:
+            os.remove(audio_file)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Hotkey callbacks
+# ---------------------------------------------------------------------------
+
+def _on_hold() -> None:
+    """Hold threshold reached — start recording immediately in dictate mode."""
+    global _recording_mode
+    _recording_mode = "dictate"
+    _start_recording()
+
+
+def _on_stop() -> None:
+    """Key released while recording — stop and transcribe."""
+    global _audio_thread, _audio_path
+
+    audio.stop_recording()
+    _beep(440, 120)
+    overlay_module.show_transcribing()
+
+    if _audio_thread is not None:
+        _audio_thread.join(timeout=10)
+        _audio_thread = None
+
+    if _tray:
+        _tray.set_idle()
+
+    if not _audio_path:
+        logger.warning("No audio file produced — skipping transcription")
+        overlay_module.hide_overlay()
+        return
+
+    path = _audio_path
+    _audio_path = None
+
+    global _pending_future
+    _pending_future = _process_executor.submit(_process, path, _recording_mode)
+
+
+def _on_tap() -> None:
+    """Short press — emit tap_signal so the Qt main thread shows the menu."""
+    # Guard: ignore tap if a recording is already running.
+    if _audio_thread is not None and _audio_thread.is_alive():
+        logger.debug("Tap ignored — recording already in progress")
+        return
+    # Emit signal from this (non-Qt) thread; Qt delivers it on the main thread
+    # via its normal queued-connection mechanism.
+    if _dispatcher is not None:
+        _dispatcher.tap_signal.emit()
+    else:
+        logger.error("_dispatcher not initialised — tap ignored")
+
+
+def _show_mode_menu() -> None:
+    """Show the mode dialog (Qt main thread only) and start recording."""
+    global _recording_mode
+    mode = menu_module.show_mode_menu()
+    if mode is None:
+        logger.debug("Mode menu cancelled")
+        return
+    _recording_mode = mode
+    _start_recording()
+
+
+# ---------------------------------------------------------------------------
+# main()
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    # --- Single-instance lock (must be first) ---
+    _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\VoiceDesk_SingleInstance")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        logging.warning("VoiceDesk already running — exiting.")
+        sys.exit(1)
+
+    _setup_logging()
+    logger.info("VoiceDesk starting")
+
+    global _config, _tray
+
+    try:
+        _config = config_loader.load_config()
+        logger.info("Config loaded: %s", _config)
+    except Exception as exc:
+        logger.critical("Failed to load config: %s", exc)
+        raise SystemExit(1) from exc
+
+    # Create the Qt application first — must exist before any QWidget.
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)  # overlay hiding must not quit the app
+
+    # Allow Ctrl+C in the terminal to exit cleanly.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    # Pulse the Python event loop every 250 ms so SIGINT is processed.
+    _sigint_timer = QTimer()
+    _sigint_timer.setInterval(250)
+    _sigint_timer.timeout.connect(lambda: None)
+    _sigint_timer.start()
+
+    # Dispatcher bridge — must be created on the main thread so its signals
+    # are delivered here.  Connect before the hotkey is registered.
+    global _dispatcher
+    _dispatcher = _Dispatcher()
+    _dispatcher.tap_signal.connect(_show_mode_menu)
+
+    # Overlay and menu widgets (must be created after QApplication).
+    overlay_module.create_overlay()
+
+    # Tray icon (background daemon thread).
+    _tray = tray_module.TrayIcon(quit_cb=app.quit)
+    _tray.run_detached()
+
+    # Warm up the transcription model in the background.
+    threading.Thread(
+        target=transcribe.warmup, args=(_config,), daemon=True, name="model-warmup"
+    ).start()
+
+    # Register the hotkey.
+    listener = hotkey_module.HotkeyListener()
+    listener.start(
+        hotkey=_config["hotkey"],
+        on_hold_cb=_on_hold,
+        on_stop_cb=_on_stop,
+        on_tap_cb=_on_tap,
+        hold_threshold=_config.get("hold_threshold_seconds", 0.8),
+    )
+
+    logger.info(
+        "Ready. Hold %r (%.1fs) to dictate; tap to select mode.",
+        _config["hotkey"],
+        _config.get("hold_threshold_seconds", 0.8),
+    )
+
+    # Run the Qt event loop — this blocks until app.quit() is called.
+    exit_code = app.exec()
+
+    listener.stop()
+    _process_executor.shutdown(wait=False)
+    logger.info("VoiceDesk shut down (exit code %d)", exit_code)
+
+
+# ---------------------------------------------------------------------------
+# Watchdog supervisor
+# ---------------------------------------------------------------------------
+
+def _run_watchdog() -> None:
+    """Spawn --worker subprocesses and restart on crash."""
+    _setup_logging()
+    MAX_RESTARTS = 3
+    restarts = 0
+    pythonw = sys.executable
+    script = os.path.abspath(__file__)
+
+    while True:
+        logger.info("Watchdog: starting VoiceDesk (attempt %d)", restarts + 1)
+        try:
+            proc = subprocess.Popen([pythonw, script, "--worker"])
+            proc.wait()
+            returncode = proc.returncode
+        except Exception as exc:
+            logger.error("Watchdog: failed to launch worker: %s", exc)
+            returncode = -1
+
+        if returncode == 0:
+            logger.info("Watchdog: worker exited cleanly — shutting down")
+            break
+
+        restarts += 1
+        logger.warning(
+            "Watchdog: worker exited with code %d (restart %d/%d)",
+            returncode,
+            restarts,
+            MAX_RESTARTS,
+        )
+        if restarts >= MAX_RESTARTS:
+            logger.error(
+                "Watchdog: giving up after %d restarts — check logs/voicedesk.log",
+                MAX_RESTARTS,
+            )
+            break
+
+        logger.info("Watchdog: waiting 5s before restart")
+        time.sleep(5)
+
+    logger.info("Watchdog: exiting")
+
+
+if __name__ == "__main__":
+    if "--worker" in sys.argv:
+        main()
+    else:
+        _run_watchdog()
