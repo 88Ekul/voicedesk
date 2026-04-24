@@ -123,9 +123,37 @@ def _triple_beep() -> None:
 # Recording pipeline
 # ---------------------------------------------------------------------------
 
+def _abort_active_recording() -> None:
+    """Stop any in-flight recording and discard its output.
+
+    Called at the top of _start_recording so a new activation always supersedes
+    a previous one instead of spawning an orphan thread.
+    """
+    global _audio_thread, _audio_path, _target_hwnd
+    if _audio_thread is None or not _audio_thread.is_alive():
+        _audio_thread = None
+        return
+    logger.info("Aborting in-flight recording — superseded by new activation")
+    audio.stop_recording()
+    _audio_thread.join(timeout=3)
+    if _audio_thread.is_alive():
+        logger.warning("Audio thread did not exit within 3s after stop signal")
+    _audio_thread = None
+    if _audio_path:
+        try:
+            os.remove(_audio_path)
+            logger.debug("Discarded orphan audio file: %s", _audio_path)
+        except OSError:
+            pass
+        _audio_path = None
+    _target_hwnd = None
+
+
 def _start_recording() -> None:
     """Begin audio capture.  Safe to call from any thread."""
     global _audio_thread, _audio_path, _pending_future, _target_hwnd
+
+    _abort_active_recording()
 
     _audio_path = None
 
@@ -277,13 +305,14 @@ def _on_stop() -> None:
 
 
 def _on_tap() -> None:
-    """Short press — emit tap_signal so the Qt main thread shows the menu."""
-    # Guard: ignore tap if a recording is already running.
+    """Short press — stop an in-flight recording, else show the mode menu."""
     if _audio_thread is not None and _audio_thread.is_alive():
-        logger.debug("Tap ignored — recording already in progress")
+        # Recording active (typically menu-initiated — no key to release).
+        # Treat the tap as an explicit stop.  Dispatch to a worker thread so
+        # the keyboard hook returns immediately (_on_stop joins the audio thread).
+        logger.info("Tap during recording — stopping")
+        threading.Thread(target=_on_stop, daemon=True, name="tap-stop").start()
         return
-    # Emit signal from this (non-Qt) thread; Qt delivers it on the main thread
-    # via its normal queued-connection mechanism.
     if _dispatcher is not None:
         _dispatcher.tap_signal.emit()
     else:
