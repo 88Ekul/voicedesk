@@ -29,9 +29,23 @@ _CANONICAL: dict[str, str] = {
     "windows": "win",
 }
 
+_MODIFIERS: frozenset[str] = frozenset({"ctrl", "shift", "alt", "win"})
+
+# Module-level registry so suppressors can broadcast Win events to all listeners.
+_listeners: list["HotkeyListener"] = []
+_listeners_lock = threading.Lock()
+
 
 def _canon(name: str) -> str:
     return _CANONICAL.get(name.lower(), name.lower())
+
+
+def _broadcast_to_all(event: "keyboard.KeyboardEvent") -> None:
+    """Dispatch a (suppressed) Win event to every registered listener's handler."""
+    with _listeners_lock:
+        targets = list(_listeners)
+    for lst in targets:
+        threading.Thread(target=lst._handle_event, args=(event,), daemon=True).start()
 
 
 class HotkeyListener:
@@ -40,10 +54,11 @@ class HotkeyListener:
     def __init__(self) -> None:
         self._hook = None
         self._suppressor = None
-        self._combo_ctrl_held: bool = False
         self._win_down_suppressed: bool = False
         self._parts: list[str] = []
         self._held: set[str] = set()
+        self._all_held: set[str] = set()        # all currently-held modifier keys
+        self._suppressor_held: set[str] = set() # modifier state seen by suppressor
 
         self._active: bool = False      # combo currently pressed
         self._hold_mode: bool = False   # threshold crossed → recording active
@@ -94,14 +109,18 @@ class HotkeyListener:
         self._on_tap = on_tap_cb
         self._hold_threshold = hold_threshold
         self._held.clear()
+        self._all_held.clear()
+        self._suppressor_held.clear()
         self._active = False
         self._hold_mode = False
 
         self._hook = keyboard.hook(self._handle_event, suppress=False)
         # Suppress only the Win key when pressed as part of the combo.
         self._win_down_suppressed = False
-        self._combo_ctrl_held = False
         self._suppressor = keyboard.hook(self._suppress_combo, suppress=True)
+        with _listeners_lock:
+            if self not in _listeners:
+                _listeners.append(self)
         logger.info(
             "Hotkey '%s' registered (hold_threshold=%.2fs)", hotkey, hold_threshold
         )
@@ -109,10 +128,37 @@ class HotkeyListener:
     # ------------------------------------------------------------------
 
     def _handle_event(self, event: keyboard.KeyboardEvent) -> None:
+        key = _canon(event.name)
+
+        # Always track modifier state, even during ignore windows, to keep
+        # the extra-modifier guard accurate across key sequences.
+        if key in _MODIFIERS:
+            if event.event_type == keyboard.KEY_DOWN:
+                self._all_held.add(key)
+            else:
+                self._all_held.discard(key)
+
+        # If we're pre-hold (active, threshold not yet reached) and an extra
+        # modifier has just arrived, the user is reaching for a longer combo —
+        # cancel so that listener wins cleanly.  _hold_mode means recording is
+        # already underway; leave it alone.
+        if self._active and not self._hold_mode:
+            extra = (_MODIFIERS & self._all_held) - set(self._parts)
+            if extra:
+                with self._lock:
+                    if self._active and not self._hold_mode:
+                        if self._hold_timer is not None:
+                            self._hold_timer.cancel()
+                            self._hold_timer = None
+                        self._active = False
+                        logger.debug(
+                            "Cancelled pre-hold activation — extra modifier %s (listener=%x)",
+                            extra, id(self),
+                        )
+
         if time.monotonic() < self._ignore_until:
             return
         logger.debug("KEY EVENT: type=%s name=%s listener=%x", event.event_type, event.name, id(self))
-        key = _canon(event.name)
 
         # Filter: only process events for keys in our combo.
         if key not in self._parts:
@@ -134,6 +180,16 @@ class HotkeyListener:
                     return
                 if any(now - self._last_press_times.get(p, 0.0) > 0.5 for p in self._parts):
                     logger.debug("Combo parts present but stale — ignoring (stuck key?)")
+                    return
+
+                # Don't activate if an extra modifier is held — a longer combo on
+                # another listener (e.g. ctrl+shift+win) should handle it instead.
+                extra_mods = (_MODIFIERS & self._all_held) - set(self._parts)
+                if extra_mods:
+                    logger.debug(
+                        "Extra modifier(s) %s held — combo ignored (listener=%x)",
+                        extra_mods, id(self)
+                    )
                     return
 
                 self._active = True
@@ -166,7 +222,7 @@ class HotkeyListener:
                         self._on_stop()
                     self._ignore_until = now + 5.0
                 else:
-                    logger.info("Tap detected (%.2fs) — showing menu", elapsed)
+                    logger.info("Tap detected (%.2fs) — firing on_tap callback (listener=%x)", elapsed, id(self))
                     if self._on_tap:
                         self._on_tap()
 
@@ -180,28 +236,30 @@ class HotkeyListener:
             self._on_hold()
 
     def _suppress_combo(self, event: keyboard.KeyboardEvent) -> bool:
-        """Selectively suppress Win key events while Ctrl is held.
+        """Selectively suppress Win key events when all other combo parts are held.
 
-        Returns False (suppress) only when Win goes down/up as part of a
-        Ctrl+Win combination, leaving Win-alone free to open Start Menu.
+        Generalised: derives the guard keys from self._parts so this works for
+        both ctrl+win and ctrl+shift+win without hardcoding key names.
+        Returns False (suppress) only when Win goes down/up as part of this
+        specific combo, leaving Win-alone free to open Start Menu.
         True means 'allow the event through'.
         """
         key = _canon(event.name)
-        if key == "ctrl":
-            self._combo_ctrl_held = (event.event_type == keyboard.KEY_DOWN)
-            return True  # always allow Ctrl through
-        if key == "win":
-            if event.event_type == keyboard.KEY_DOWN and self._combo_ctrl_held:
+        # Track modifier state for the guard computation.
+        if key in _MODIFIERS:
+            if event.event_type == keyboard.KEY_DOWN:
+                self._suppressor_held.add(key)
+            else:
+                self._suppressor_held.discard(key)
+        if key == "win" and "win" in self._parts:
+            guards = set(self._parts) - {"win"}
+            if event.event_type == keyboard.KEY_DOWN and guards.issubset(self._suppressor_held):
                 self._win_down_suppressed = True
-                threading.Thread(
-                    target=self._handle_event, args=(event,), daemon=True
-                ).start()
-                return False  # suppress Win while Ctrl held
+                _broadcast_to_all(event)
+                return False  # suppress Win while guard keys held
             if event.event_type == keyboard.KEY_UP and self._win_down_suppressed:
                 self._win_down_suppressed = False
-                threading.Thread(
-                    target=self._handle_event, args=(event,), daemon=True
-                ).start()
+                _broadcast_to_all(event)
                 return False  # suppress matching Win release
         return True  # allow everything else
 
@@ -209,6 +267,11 @@ class HotkeyListener:
 
     def stop(self) -> None:
         """Unregister the hotkey hook."""
+        with _listeners_lock:
+            try:
+                _listeners.remove(self)
+            except ValueError:
+                pass
         if self._hold_timer is not None:
             self._hold_timer.cancel()
             self._hold_timer = None

@@ -72,7 +72,8 @@ _audio_thread: threading.Thread | None = None
 _audio_path: str | None = None
 _config: dict = {}
 _tray: tray_module.TrayIcon | None = None
-_recording_mode: str = "dictate"   # 'dictate' | 'inbox'
+_recording_mode: str = "dictate"   # 'dictate' | 'inbox' | 'inbox_and_paste' | 'inbox_fallback'
+_target_hwnd: int | None = None    # foreground HWND captured at dictate record-start
 
 _process_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="transcribe-paste"
@@ -100,10 +101,22 @@ _dispatcher: _Dispatcher | None = None
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _get_foreground_hwnd() -> int:
+    return int(ctypes.windll.user32.GetForegroundWindow())
+
+
 def _beep(frequency: int, duration_ms: int) -> None:
     threading.Thread(
         target=winsound.Beep, args=(frequency, duration_ms), daemon=True
     ).start()
+
+
+def _triple_beep() -> None:
+    def _do() -> None:
+        winsound.Beep(660, 80)
+        winsound.Beep(880, 80)
+        winsound.Beep(1100, 80)
+    threading.Thread(target=_do, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +125,15 @@ def _beep(frequency: int, duration_ms: int) -> None:
 
 def _start_recording() -> None:
     """Begin audio capture.  Safe to call from any thread."""
-    global _audio_thread, _audio_path, _pending_future
+    global _audio_thread, _audio_path, _pending_future, _target_hwnd
 
     _audio_path = None
+
+    if _recording_mode == "dictate":
+        _target_hwnd = _get_foreground_hwnd() or None
+        logger.info("Dictate start — captured target HWND=%s", _target_hwnd)
+    else:
+        _target_hwnd = None
 
     if _pending_future is not None and not _pending_future.done():
         if _pending_future.cancel():
@@ -145,7 +164,7 @@ def _start_recording() -> None:
                     path = _audio_path
                     _audio_path = None
                     _pending_future = _process_executor.submit(
-                        _process, path, _recording_mode
+                        _process, path, _resolve_effective_mode()
                     )
         except Exception as exc:
             logger.error("Audio recording failed: %s", exc)
@@ -166,17 +185,27 @@ def _process(audio_file: str, mode: str) -> None:
             _beep(220, 200)  # low single beep = nothing heard
             return
 
-        if mode == "inbox":
+        if mode in ("inbox_and_paste", "inbox_fallback"):
             inbox_path = _config.get(
                 "inbox_path",
                 os.path.expanduser("~/Documents/inbox"),
             )
             paste.save_to_inbox(text, inbox_path)
+            _triple_beep()
+            if mode == "inbox_fallback":
+                logger.info("Focus-loss fallback: saved to inbox (no paste)")
+        elif mode == "inbox":
+            inbox_path = _config.get(
+                "inbox_path",
+                os.path.expanduser("~/Documents/inbox"),
+            )
+            paste.save_to_inbox(text, inbox_path)
+            _beep(660, 80)
+            _beep(880, 80)
         else:
             paste.paste_text(text, auto_paste=_config.get("auto_paste", True))
-
-        _beep(660, 80)
-        _beep(880, 80)
+            _beep(660, 80)
+            _beep(880, 80)
     except Exception as exc:
         logger.error("Transcription/paste failed: %s", exc)
     finally:
@@ -198,9 +227,29 @@ def _on_hold() -> None:
     _start_recording()
 
 
+def _on_hold_inbox() -> None:
+    """Hold threshold reached on inbox hotkey — transcribe and save to inbox."""
+    global _recording_mode
+    _recording_mode = "inbox_and_paste"
+    _start_recording()
+
+
+def _resolve_effective_mode() -> str:
+    """Return inbox_fallback if dictate's target window has lost foreground."""
+    if _recording_mode == "dictate" and _target_hwnd:
+        current = _get_foreground_hwnd()
+        if current != _target_hwnd:
+            logger.info(
+                "Target HWND %s lost foreground (now %s) — falling back to inbox save",
+                _target_hwnd, current,
+            )
+            return "inbox_fallback"
+    return _recording_mode
+
+
 def _on_stop() -> None:
     """Key released while recording — stop and transcribe."""
-    global _audio_thread, _audio_path
+    global _audio_thread, _audio_path, _target_hwnd
 
     audio.stop_recording()
     _beep(440, 120)
@@ -222,7 +271,9 @@ def _on_stop() -> None:
     _audio_path = None
 
     global _pending_future
-    _pending_future = _process_executor.submit(_process, path, _recording_mode)
+    effective_mode = _resolve_effective_mode()
+    _target_hwnd = None
+    _pending_future = _process_executor.submit(_process, path, effective_mode)
 
 
 def _on_tap() -> None:
@@ -303,7 +354,7 @@ def main() -> None:
         target=transcribe.warmup, args=(_config,), daemon=True, name="model-warmup"
     ).start()
 
-    # Register the hotkey.
+    # Register the primary dictate hotkey.
     listener = hotkey_module.HotkeyListener()
     listener.start(
         hotkey=_config["hotkey"],
@@ -313,16 +364,28 @@ def main() -> None:
         hold_threshold=_config.get("hold_threshold_seconds", 0.8),
     )
 
+    # Register the inbox hotkey (paste + save to Second Brain inbox).
+    listener_inbox = hotkey_module.HotkeyListener()
+    listener_inbox.start(
+        hotkey=_config.get("inbox_hotkey", "alt+win"),
+        on_hold_cb=_on_hold_inbox,
+        on_stop_cb=_on_stop,
+        on_tap_cb=lambda: None,  # hold-only; tap intentionally ignored
+        hold_threshold=_config.get("hold_threshold_seconds", 0.8),
+    )
+
     logger.info(
-        "Ready. Hold %r (%.1fs) to dictate; tap to select mode.",
+        "Ready. Hold %r (%.1fs) to dictate; tap to select mode. Hold %r to inbox+paste.",
         _config["hotkey"],
         _config.get("hold_threshold_seconds", 0.8),
+        _config.get("inbox_hotkey", "alt+win"),
     )
 
     # Run the Qt event loop — this blocks until app.quit() is called.
     exit_code = app.exec()
 
     listener.stop()
+    listener_inbox.stop()
     _process_executor.shutdown(wait=False)
     logger.info("VoiceDesk shut down (exit code %d)", exit_code)
 

@@ -52,8 +52,6 @@ def record_audio(max_duration: int, device=None, volume_cb=None) -> str:
         blocksize=block_size,
     ) as stream:
         for _ in range(max_blocks):
-            if _stop_event.is_set():
-                break
             block, _ = stream.read(block_size)
             frames.append(block.copy())
             if volume_cb is not None:
@@ -65,6 +63,8 @@ def record_audio(max_duration: int, device=None, volume_cb=None) -> str:
                     volume_cb(rms)
                 except Exception:  # noqa: BLE001
                     pass
+            if _stop_event.is_set():
+                break
 
     if not frames:
         raise RuntimeError("No audio frames captured (recording stopped before first block)")

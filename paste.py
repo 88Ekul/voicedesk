@@ -57,9 +57,12 @@ def save_to_inbox(text: str, inbox_path: str) -> str:
         Absolute path of the file that was written.
     """
     os.makedirs(inbox_path, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    filepath = os.path.join(inbox_path, f"{timestamp}.md")
+    now = datetime.datetime.now()
+    timestamp = now.strftime("%Y-%m-%d_%H-%M")
+    date_str = now.strftime("%Y-%m-%d %H:%M")
+    filepath = os.path.join(inbox_path, f"{timestamp}_voice-note.md")
+    frontmatter = f"---\ndate: {date_str}\nsource: voicedesk\ntype: voice-note\n---\n\n"
     with open(filepath, "w", encoding="utf-8") as fh:
-        fh.write(text)
+        fh.write(frontmatter + text)
     logger.info("Transcript saved to inbox: %s (%d chars)", filepath, len(text))
     return filepath
