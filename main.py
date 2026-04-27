@@ -320,14 +320,8 @@ def _on_tap() -> None:
 
 
 def _show_mode_menu() -> None:
-    """Show the mode dialog (Qt main thread only) and start recording."""
-    global _recording_mode
-    mode = menu_module.show_mode_menu()
-    if mode is None:
-        logger.debug("Mode menu cancelled")
-        return
-    _recording_mode = mode
-    _start_recording()
+    """Show the settings/tools palette (Qt main thread only)."""
+    menu_module.show_mode_menu(_config)
 
 
 # ---------------------------------------------------------------------------

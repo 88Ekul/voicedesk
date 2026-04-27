@@ -43,4 +43,16 @@ def load_config(path: str = CONFIG_PATH) -> dict:
     if missing:
         raise ValueError(f"Config is missing required keys: {', '.join(missing)}")
 
+    config.setdefault("output_style", "formal")
+
     return config
+
+
+def save_output_style(style: str, path: str = CONFIG_PATH) -> None:
+    """Persist output_style to config.yaml without disturbing other keys or comments."""
+    yaml = YAML()
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.load(f)
+    data["output_style"] = style
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f)
