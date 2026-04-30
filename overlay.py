@@ -80,8 +80,12 @@ class WaveformOverlay(QWidget):
         self.setFixedSize(PILL_W, PILL_H)
         self._reposition()
         # Start invisible but alive so the first reveal has no creation cost.
-        self.setWindowOpacity(0.0)
+        # show() must precede setWindowOpacity(0.0) — on Windows, showing a
+        # WA_TranslucentBackground window that is already at opacity 0 may leave
+        # the DWM surface half-mapped, causing all subsequent opacity animations
+        # to produce no visible result.
         self.show()
+        self.setWindowOpacity(0.0)
 
     def _reposition(self) -> None:
         screen = QApplication.primaryScreen()
@@ -118,6 +122,11 @@ class WaveformOverlay(QWidget):
 
     def _do_show_recording(self) -> None:
         self._transcribing = False
+        # Defensive: ensure the window is fully mapped and on top. show() is
+        # idempotent; raise_() recovers from Z-order disruption by other
+        # always-on-top windows.
+        self.show()
+        self.raise_()
         # Entry animation: 0 → 1.0 over 150 ms using QPropertyAnimation.
         self._stop_anim()
         self._anim = QPropertyAnimation(self, b"windowOpacity", self)

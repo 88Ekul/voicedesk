@@ -39,7 +39,6 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -161,29 +160,21 @@ class _MicIcon(QWidget):
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
 
-        # Capsule head: 12w × 22h pill, centred at x=26
-        p.drawRoundedRect(20, 4, 12, 22, 6, 6)
+        # Capsule head: 14w × 20h pill, centred at x=26
+        p.drawRoundedRect(19, 6, 14, 20, 7, 7)
 
-        # Two horizontal grille lines
-        for gy in (11, 18):
+        # Three horizontal grille lines
+        for gy in (12, 16, 20):
             p.drawLine(22, gy, 30, gy)
 
-        # Yoke arms: left and right arcs cradling the capsule, meeting at stand top
-        left_arm = QPainterPath()
-        left_arm.moveTo(20, 16)
-        left_arm.cubicTo(12, 20, 14, 32, 26, 32)
-        p.drawPath(left_arm)
+        # Yoke cradle: lower-half ellipse arc forming a symmetric U
+        p.drawArc(QRectF(13, 18, 26, 20), 0, -180 * 16)
 
-        right_arm = QPainterPath()
-        right_arm.moveTo(32, 16)
-        right_arm.cubicTo(40, 20, 38, 32, 26, 32)
-        p.drawPath(right_arm)
+        # Stand: from yoke bottom to base
+        p.drawLine(26, 38, 26, 46)
 
-        # Stand: from yoke junction to base
-        p.drawLine(26, 32, 26, 44)
-
-        # Base
-        p.drawRoundedRect(15, 44, 22, 4, 1, 1)
+        # Base: narrower than yoke, anchored at bottom
+        p.drawRoundedRect(20, 46, 12, 3, 1.5, 1.5)
 
         p.end()
 
@@ -232,14 +223,14 @@ class _IconWell(QWidget):
         cx, cy, r = 18.0, 18.0, 12.5
         outer = QRectF(cx - r, cy - r, r * 2, r * 2)
 
-        # Translucent dark inset with visible Rose Gold ring.
+        # Mid-tone inset with visible Rose Gold ring.
         inner = outer.adjusted(1.5, 1.5, -1.5, -1.5)
-        p.setBrush(QBrush(QColor(0x14, 0x24, 0x24, 90)))
+        p.setBrush(QBrush(QColor(0x2C, 0x4A, 0x4A, 130)))
         p.setPen(QPen(_rose_alpha(110), 1.0))
         p.drawEllipse(inner)
 
-        # Subtle upper-left highlight to reinforce the recessed feel.
-        hi_pen = QPen(_offwhite_alpha(20), 1.0)
+        # Upper-left highlight to reinforce the recessed feel.
+        hi_pen = QPen(_offwhite_alpha(34), 1.0)
         hi_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(hi_pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -448,12 +439,6 @@ class _BrushedBackground(QWidget):
         super().__init__(parent)
         self.setMinimumWidth(360)
 
-        glow = QGraphicsDropShadowEffect(self)
-        glow.setBlurRadius(40)
-        glow.setOffset(0, 0)
-        glow.setColor(QColor(_ROSE.red(), _ROSE.green(), _ROSE.blue(), 60))
-        self.setGraphicsEffect(glow)
-
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -520,13 +505,13 @@ class _PaletteDialog(QDialog):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Popup
+            | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
     def _setup_ui(self) -> None:
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(40, 40, 40, 44)
+        outer.setContentsMargins(2, 2, 2, 2)
 
         bg = _BrushedBackground()
         outer.addWidget(bg)
@@ -628,6 +613,8 @@ class _PaletteDialog(QDialog):
         self.move(start)
         self.setWindowOpacity(0.0)
         self.show()
+        self.activateWindow()
+        QApplication.instance().installEventFilter(self)
 
         pos_anim = QPropertyAnimation(self, b"pos", self)
         pos_anim.setDuration(_FADE_IN_MS)
@@ -653,6 +640,7 @@ class _PaletteDialog(QDialog):
         if self._dismissed:
             return
         self._dismissed = True
+        QApplication.instance().removeEventFilter(self)
         anim = QPropertyAnimation(self, b"windowOpacity", self)
         anim.setDuration(_FADE_OUT_MS)
         anim.setStartValue(self.windowOpacity())
@@ -664,6 +652,13 @@ class _PaletteDialog(QDialog):
     # ------------------------------------------------------------------
     # Events
     # ------------------------------------------------------------------
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.MouseButtonPress:
+            gp = event.globalPosition().toPoint()
+            if not self.geometry().contains(gp):
+                self._cancel()
+        return False
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         gp = event.globalPosition().toPoint()
