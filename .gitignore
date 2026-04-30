@@ -1,4 +1,7 @@
 # Models
+*.bin
+*.dll
+*.ggml
 models/
 
 # Temporary audio files
