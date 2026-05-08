@@ -231,6 +231,7 @@ def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
 
         text = text_processing.apply_corrections(text)
         text = text_processing.apply_snippets(text)
+        text = text_processing.apply_fillers(text)
 
         if mode in ("inbox_and_paste", "inbox_fallback"):
             inbox_path = _config.get(
