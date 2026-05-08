@@ -1,24 +1,58 @@
 """Floating waveform pill overlay for VoiceDesk.
 
-PyQt6-based, always-on-top, borderless, click-through window.  The widget
-lives entirely on the Qt main thread; all public methods are thread-safe
-because they emit signals rather than touching Qt objects directly.
+PyQt6-based, always-on-top, borderless window.  The widget lives entirely on
+the Qt main thread; all public methods are thread-safe because they emit
+signals rather than touching Qt objects directly.
+
+WA_TransparentForMouseEvents is intentionally NOT set so that the Stop and
+Cancel buttons (child QPushButtons) can receive clicks.  The surrounding
+transparent pixels pass clicks through via DWM alpha hit-testing on Win10+.
 """
 
 import logging
 
 from PyQt6.QtCore import QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
 
 logger = logging.getLogger(__name__)
 
-PILL_W = 200
+PILL_W = 248          # total widget width (expanded to host flanking buttons)
 PILL_H = 50
 NUM_BARS = 8
 BAR_W = 8
 BAR_GAP = 6
 MARGIN_ABOVE_TASKBAR = 20
+
+# Button geometry
+_BTN_D = 22                           # diameter
+_BTN_Y = (PILL_H - _BTN_D) // 2      # vertically centred
+_BTN_CANCEL_X = 5                     # Cancel (✕) flush-left
+_BTN_STOP_X = PILL_W - 5 - _BTN_D    # Stop (■) flush-right
+
+_BTN_CANCEL_STYLE = """
+    QPushButton {
+        background: rgba(220, 60, 60, 200);
+        border-radius: 11px;
+        color: white;
+        font-size: 11px;
+        border: none;
+    }
+    QPushButton:hover  { background: rgba(220, 60, 60, 255); }
+    QPushButton:pressed { background: rgba(160, 40, 40, 255); }
+"""
+
+_BTN_STOP_STYLE = """
+    QPushButton {
+        background: rgba(80, 200, 120, 200);
+        border-radius: 11px;
+        color: white;
+        font-size: 11px;
+        border: none;
+    }
+    QPushButton:hover  { background: rgba(80, 200, 120, 255); }
+    QPushButton:pressed { background: rgba(50, 150, 90, 255); }
+"""
 
 _BAR_MIN_H = 4
 _BAR_MAX_H = 36
@@ -30,9 +64,13 @@ _GLOW_COLOUR = QColor(0xB7, 0x6E, 0x79)
 
 
 class WaveformOverlay(QWidget):
-    """Animated waveform pill.  Always on top, click-through, no taskbar entry."""
+    """Animated waveform pill.  Always on top, no taskbar entry."""
 
-    # Signals for thread-safe dispatch onto the Qt main thread.
+    # Public signals — main.py connects handlers to these.
+    stop_clicked = pyqtSignal()
+    cancel_clicked = pyqtSignal()
+
+    # Internal signals for thread-safe dispatch onto the Qt main thread.
     _sig_show_recording = pyqtSignal()
     _sig_update_volume = pyqtSignal(float)
     _sig_show_transcribing = pyqtSignal()
@@ -54,6 +92,7 @@ class WaveformOverlay(QWidget):
         self._anim: QPropertyAnimation | None = None
 
         self._setup_window()
+        self._setup_buttons()
 
         self._sig_show_recording.connect(self._do_show_recording)
         self._sig_update_volume.connect(self._do_update_volume)
@@ -76,7 +115,8 @@ class WaveformOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # WA_TransparentForMouseEvents intentionally omitted — buttons need clicks.
+        # Transparent pixels pass through via DWM alpha hit-testing on Win10+.
         self.setFixedSize(PILL_W, PILL_H)
         self._reposition()
         # Start invisible but alive so the first reveal has no creation cost.
@@ -95,6 +135,23 @@ class WaveformOverlay(QWidget):
         x = g.left() + (g.width() - PILL_W) // 2
         y = g.bottom() - PILL_H - MARGIN_ABOVE_TASKBAR
         self.move(x, y)
+
+    def _setup_buttons(self) -> None:
+        self._cancel_btn = QPushButton("✕", self)   # ✕
+        self._cancel_btn.setFixedSize(_BTN_D, _BTN_D)
+        self._cancel_btn.move(_BTN_CANCEL_X, _BTN_Y)
+        self._cancel_btn.setStyleSheet(_BTN_CANCEL_STYLE)
+        self._cancel_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._cancel_btn.clicked.connect(self.cancel_clicked)
+        self._cancel_btn.hide()
+
+        self._stop_btn = QPushButton("■", self)     # ■
+        self._stop_btn.setFixedSize(_BTN_D, _BTN_D)
+        self._stop_btn.move(_BTN_STOP_X, _BTN_Y)
+        self._stop_btn.setStyleSheet(_BTN_STOP_STYLE)
+        self._stop_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._stop_btn.clicked.connect(self.stop_clicked)
+        self._stop_btn.hide()
 
     # ------------------------------------------------------------------
     # Public thread-safe API
@@ -122,6 +179,10 @@ class WaveformOverlay(QWidget):
 
     def _do_show_recording(self) -> None:
         self._transcribing = False
+        self._stop_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(True)
+        self._stop_btn.show()
+        self._cancel_btn.show()
         # Defensive: ensure the window is fully mapped and on top. show() is
         # idempotent; raise_() recovers from Z-order disruption by other
         # always-on-top windows.
@@ -156,8 +217,15 @@ class WaveformOverlay(QWidget):
         self._smoothed = 0.0
         self._glow_radius = 0.0
         self._last_glow_smoothed = 0.0
+        # Disable buttons so a late click during transcription is a no-op.
+        self._stop_btn.setEnabled(False)
+        self._cancel_btn.setEnabled(False)
+        self._stop_btn.hide()
+        self._cancel_btn.hide()
 
     def _do_hide(self) -> None:
+        self._stop_btn.hide()
+        self._cancel_btn.hide()
         # Exit animation: current opacity → 0 over 300 ms.
         self._stop_anim()
         self._anim = QPropertyAnimation(self, b"windowOpacity", self)
@@ -297,3 +365,13 @@ def show_transcribing() -> None:
 def hide_overlay() -> None:
     if _overlay:
         _overlay.hide_overlay()
+
+
+def stop_signal():
+    """Return the overlay's stop_clicked signal for external connection."""
+    return _overlay.stop_clicked if _overlay else None
+
+
+def cancel_signal():
+    """Return the overlay's cancel_clicked signal for external connection."""
+    return _overlay.cancel_clicked if _overlay else None

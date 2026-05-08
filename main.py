@@ -80,6 +80,13 @@ _process_executor = concurrent.futures.ThreadPoolExecutor(
 )
 _pending_future: concurrent.futures.Future | None = None
 
+# Termination state — reset at the start of every recording session.
+# One and only one termination path (hotkey release, button click, max-duration)
+# may claim the recording; the rest see _terminating=True and return silently.
+_termination_lock = threading.Lock()
+_terminating: bool = False
+_cancel_flag = threading.Event()   # set → discard audio, skip transcription
+
 
 class _Dispatcher(QObject):
     """QObject that lives on the Qt main thread.
@@ -155,6 +162,10 @@ def _start_recording() -> None:
 
     _abort_active_recording()
 
+    global _terminating
+    _terminating = False
+    _cancel_flag.clear()
+
     _audio_path = None
 
     if _recording_mode == "dictate":
@@ -183,6 +194,10 @@ def _start_recording() -> None:
             )
             # Max duration reached without an explicit stop.
             if not audio._stop_event.is_set():
+                with _termination_lock:
+                    if _terminating:
+                        return   # button/hotkey already claimed termination
+                    _terminating = True
                 logger.info("Max duration reached — auto-triggering transcription")
                 _beep(440, 120)
                 overlay_module.show_transcribing()
@@ -202,7 +217,7 @@ def _start_recording() -> None:
     _audio_thread.start()
 
 
-def _process(audio_file: str, mode: str) -> None:
+def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
     """Transcribe and either paste or save to inbox.  Runs in serial executor."""
     try:
         text = transcribe.transcribe(audio_file, _config)
@@ -231,6 +246,10 @@ def _process(audio_file: str, mode: str) -> None:
             _beep(660, 80)
             _beep(880, 80)
         else:
+            if paste_hwnd:
+                # Restore focus to the original target window — the Stop button
+                # click shifted foreground away from it.
+                ctypes.windll.user32.SetForegroundWindow(paste_hwnd)
             paste.paste_text(text, auto_paste=_config.get("auto_paste", True))
             _beep(660, 80)
             _beep(880, 80)
@@ -275,13 +294,33 @@ def _resolve_effective_mode() -> str:
     return _recording_mode
 
 
-def _on_stop() -> None:
-    """Key released while recording — stop and transcribe."""
-    global _audio_thread, _audio_path, _target_hwnd
+def _terminate_recording(cancel: bool, pinned_hwnd: int | None = None) -> None:
+    """Single shared termination path for Stop and Cancel.
+
+    Args:
+        cancel: True → discard audio, no transcription.
+                False → transcribe and paste/save as configured.
+        pinned_hwnd: When set (Stop button path), the target HWND captured at
+            record-start.  Bypasses the foreground-loss check in
+            _resolve_effective_mode and restores focus before pasting.
+    Safe to call from any thread; idempotent via _termination_lock.
+    """
+    global _audio_thread, _audio_path, _target_hwnd, _terminating
+
+    with _termination_lock:
+        if _terminating:
+            return   # another path (button, hotkey, max-duration) already won
+        _terminating = True
+        if cancel:
+            _cancel_flag.set()
 
     audio.stop_recording()
-    _beep(440, 120)
-    overlay_module.show_transcribing()
+    if cancel:
+        _beep(220, 200)              # low single beep = audio discarded
+        overlay_module.hide_overlay()
+    else:
+        _beep(440, 120)
+        overlay_module.show_transcribing()
 
     if _audio_thread is not None:
         _audio_thread.join(timeout=10)
@@ -290,6 +329,18 @@ def _on_stop() -> None:
     if _tray:
         _tray.set_idle()
 
+    if cancel:
+        if _audio_path:
+            try:
+                os.remove(_audio_path)
+                logger.debug("Cancel: discarded audio file %s", _audio_path)
+            except OSError:
+                pass
+            _audio_path = None
+        _target_hwnd = None
+        return
+
+    # --- Stop path: transcribe and paste/save ---
     if not _audio_path:
         logger.warning("No audio file produced — skipping transcription")
         overlay_module.hide_overlay()
@@ -299,9 +350,20 @@ def _on_stop() -> None:
     _audio_path = None
 
     global _pending_future
-    effective_mode = _resolve_effective_mode()
+    # When the Stop button triggered termination, pinned_hwnd holds the
+    # original target HWND.  Skip the foreground-loss check — the button
+    # click itself caused the focus shift, not genuine user navigation.
+    if pinned_hwnd is not None and _recording_mode == "dictate":
+        effective_mode = _recording_mode
+    else:
+        effective_mode = _resolve_effective_mode()
     _target_hwnd = None
-    _pending_future = _process_executor.submit(_process, path, effective_mode)
+    _pending_future = _process_executor.submit(_process, path, effective_mode, pinned_hwnd)
+
+
+def _on_stop() -> None:
+    """Key released while recording — stop and transcribe."""
+    _terminate_recording(cancel=False)
 
 
 def _on_tap() -> None:
@@ -317,6 +379,27 @@ def _on_tap() -> None:
         _dispatcher.tap_signal.emit()
     else:
         logger.error("_dispatcher not initialised — tap ignored")
+
+
+def _on_stop_button() -> None:
+    """Stop button clicked — stop recording and transcribe.  Qt main thread."""
+    if _audio_thread is None or not _audio_thread.is_alive():
+        return
+    # Capture the target HWND now, before this click shifts foreground focus
+    # away from the user's original window.
+    saved_hwnd = _target_hwnd
+    threading.Thread(
+        target=_terminate_recording, args=(False, saved_hwnd), daemon=True, name="btn-stop"
+    ).start()
+
+
+def _on_cancel_button() -> None:
+    """Cancel button clicked — stop recording and discard audio.  Qt main thread."""
+    if _audio_thread is None or not _audio_thread.is_alive():
+        return
+    threading.Thread(
+        target=_terminate_recording, args=(True,), daemon=True, name="btn-cancel"
+    ).start()
 
 
 def _show_mode_menu() -> None:
@@ -367,6 +450,8 @@ def main() -> None:
 
     # Overlay and menu widgets (must be created after QApplication).
     overlay_module.create_overlay()
+    overlay_module.stop_signal().connect(_on_stop_button)
+    overlay_module.cancel_signal().connect(_on_cancel_button)
 
     # Tray icon (background daemon thread).
     _tray = tray_module.TrayIcon(quit_cb=app.quit)
