@@ -25,6 +25,9 @@ import threading
 import time
 import winsound
 
+import numpy as np
+import scipy.io.wavfile as wav
+
 import keyboard
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
@@ -221,6 +224,20 @@ def _start_recording() -> None:
 def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
     """Transcribe and either paste or save to inbox.  Runs in serial executor."""
     try:
+        try:
+            _, samples = wav.read(audio_file)
+            rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) / 32768.0
+            logger.debug("Pre-transcription RMS: %.5f", rms)
+            threshold = _config.get("rms_threshold", 0.01)
+            if rms < threshold:
+                logger.info(
+                    "Skipping transcription — RMS %.5f below threshold %.5f", rms, threshold
+                )
+                _beep(220, 200)
+                return
+        except Exception as exc:
+            logger.warning("RMS check failed (%s) — proceeding to transcribe", exc)
+
         text = transcribe.transcribe(audio_file, _config)
         logger.info("Transcription (%s): %r", mode, text[:80])
 
