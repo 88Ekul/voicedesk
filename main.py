@@ -35,6 +35,7 @@ import hotkey as hotkey_module
 import menu as menu_module
 import overlay as overlay_module
 import paste
+import text_processing
 import transcribe
 import tray as tray_module
 
@@ -227,6 +228,9 @@ def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
             logger.info("Empty transcription — skipping paste")
             _beep(220, 200)  # low single beep = nothing heard
             return
+
+        text = text_processing.apply_corrections(text)
+        text = text_processing.apply_snippets(text)
 
         if mode in ("inbox_and_paste", "inbox_fallback"):
             inbox_path = _config.get(
