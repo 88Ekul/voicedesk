@@ -202,17 +202,21 @@ def _start_recording() -> None:
                     if _terminating:
                         return   # button/hotkey already claimed termination
                     _terminating = True
-                logger.info("Max duration reached — auto-triggering transcription")
-                _beep(440, 120)
-                overlay_module.show_transcribing()
-                if _tray:
-                    _tray.set_idle()
-                if _audio_path:
-                    path = _audio_path
-                    _audio_path = None
-                    _pending_future = _process_executor.submit(
-                        _process, path, _resolve_effective_mode()
-                    )
+                try:
+                    logger.info("Max duration reached — auto-triggering transcription")
+                    _beep(440, 120)
+                    overlay_module.show_transcribing()
+                    if _tray:
+                        _tray.set_idle()
+                    if _audio_path:
+                        path = _audio_path
+                        _audio_path = None
+                        _pending_future = _process_executor.submit(
+                            _process, path, _resolve_effective_mode()
+                        )
+                finally:
+                    with _termination_lock:
+                        _terminating = False
         except Exception as exc:
             logger.error("Audio recording failed: %s", exc)
             overlay_module.hide_overlay()
@@ -336,51 +340,55 @@ def _terminate_recording(cancel: bool, pinned_hwnd: int | None = None) -> None:
         if cancel:
             _cancel_flag.set()
 
-    audio.stop_recording()
-    if cancel:
-        _beep(220, 200)              # low single beep = audio discarded
-        overlay_module.hide_overlay()
-    else:
-        _beep(440, 120)
-        overlay_module.show_transcribing()
+    try:
+        audio.stop_recording()
+        if cancel:
+            _beep(220, 200)              # low single beep = audio discarded
+            overlay_module.hide_overlay()
+        else:
+            _beep(440, 120)
+            overlay_module.show_transcribing()
 
-    if _audio_thread is not None:
-        _audio_thread.join(timeout=10)
-        _audio_thread = None
+        if _audio_thread is not None:
+            _audio_thread.join(timeout=10)
+            _audio_thread = None
 
-    if _tray:
-        _tray.set_idle()
+        if _tray:
+            _tray.set_idle()
 
-    if cancel:
-        if _audio_path:
-            try:
-                os.remove(_audio_path)
-                logger.debug("Cancel: discarded audio file %s", _audio_path)
-            except OSError:
-                pass
-            _audio_path = None
+        if cancel:
+            if _audio_path:
+                try:
+                    os.remove(_audio_path)
+                    logger.debug("Cancel: discarded audio file %s", _audio_path)
+                except OSError:
+                    pass
+                _audio_path = None
+            _target_hwnd = None
+            return
+
+        # --- Stop path: transcribe and paste/save ---
+        if not _audio_path:
+            logger.warning("No audio file produced — skipping transcription")
+            overlay_module.hide_overlay()
+            return
+
+        path = _audio_path
+        _audio_path = None
+
+        global _pending_future
+        # When the Stop button triggered termination, pinned_hwnd holds the
+        # original target HWND.  Skip the foreground-loss check — the button
+        # click itself caused the focus shift, not genuine user navigation.
+        if pinned_hwnd is not None and _recording_mode == "dictate":
+            effective_mode = _recording_mode
+        else:
+            effective_mode = _resolve_effective_mode()
         _target_hwnd = None
-        return
-
-    # --- Stop path: transcribe and paste/save ---
-    if not _audio_path:
-        logger.warning("No audio file produced — skipping transcription")
-        overlay_module.hide_overlay()
-        return
-
-    path = _audio_path
-    _audio_path = None
-
-    global _pending_future
-    # When the Stop button triggered termination, pinned_hwnd holds the
-    # original target HWND.  Skip the foreground-loss check — the button
-    # click itself caused the focus shift, not genuine user navigation.
-    if pinned_hwnd is not None and _recording_mode == "dictate":
-        effective_mode = _recording_mode
-    else:
-        effective_mode = _resolve_effective_mode()
-    _target_hwnd = None
-    _pending_future = _process_executor.submit(_process, path, effective_mode, pinned_hwnd)
+        _pending_future = _process_executor.submit(_process, path, effective_mode, pinned_hwnd)
+    finally:
+        with _termination_lock:
+            _terminating = False
 
 
 def _on_stop() -> None:

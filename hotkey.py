@@ -151,7 +151,8 @@ class HotkeyListener:
                             self._hold_timer.cancel()
                             self._hold_timer = None
                         self._active = False
-                        logger.debug(
+                        self._held.clear()
+                        logger.info(
                             "Cancelled pre-hold activation — extra modifier %s (listener=%x)",
                             extra, id(self),
                         )
@@ -170,6 +171,16 @@ class HotkeyListener:
             with self._lock:
                 self._held.add(key)
                 self._last_press_times[key] = now
+
+                if self._active and self._hold_timer is None and not self._hold_mode:
+                    if now - self._press_time > 2 * self._hold_threshold:
+                        logger.warning(
+                            "Stuck _active detected — resetting (elapsed=%.2fs, listener=%x)",
+                            now - self._press_time, id(self),
+                        )
+                        self._active = False
+                        self._held.clear()
+                        self._held.add(key)
 
                 if self._active or self._hold_timer is not None:
                     return
