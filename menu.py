@@ -12,6 +12,8 @@ Public API:
     show_mode_menu(config: dict | None = None) -> None
 """
 
+import ctypes
+import ctypes.wintypes
 import logging
 import math
 
@@ -482,6 +484,73 @@ class _ClickLabel(QLabel):
 
 
 # ---------------------------------------------------------------------------
+# Low-level Windows mouse hook
+# ---------------------------------------------------------------------------
+
+_WH_MOUSE_LL    = 14
+_WM_LBUTTONDOWN = 0x0201
+_HC_ACTION      = 0
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+class _MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("pt",          _POINT),
+        ("mouseData",   ctypes.wintypes.DWORD),
+        ("flags",       ctypes.wintypes.DWORD),
+        ("time",        ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+_LowLevelMouseProc = ctypes.WINFUNCTYPE(
+    ctypes.c_long, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM
+)
+
+_user32   = ctypes.windll.user32
+_kernel32 = ctypes.windll.kernel32
+
+_user32.SetWindowsHookExW.argtypes  = [ctypes.c_int, _LowLevelMouseProc, ctypes.wintypes.HINSTANCE, ctypes.wintypes.DWORD]
+_user32.SetWindowsHookExW.restype   = ctypes.wintypes.HHOOK
+_user32.UnhookWindowsHookEx.argtypes = [ctypes.wintypes.HHOOK]
+_user32.UnhookWindowsHookEx.restype  = ctypes.wintypes.BOOL
+_user32.CallNextHookEx.argtypes      = [ctypes.wintypes.HHOOK, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+_user32.CallNextHookEx.restype       = ctypes.c_long
+_kernel32.GetModuleHandleW.argtypes  = [ctypes.wintypes.LPCWSTR]
+_kernel32.GetModuleHandleW.restype   = ctypes.wintypes.HMODULE
+
+
+class _MouseHook:
+    """WH_MOUSE_LL hook that fires a callback for left-button-down events."""
+
+    def __init__(self) -> None:
+        self._hook: ctypes.wintypes.HHOOK | None = None
+        self._proc = None   # must stay alive while hook is installed
+
+    def install(self, callback) -> None:
+        def _proc(nCode, wParam, lParam):
+            try:
+                if nCode == _HC_ACTION and wParam == _WM_LBUTTONDOWN:
+                    info = ctypes.cast(lParam, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                    callback(info.pt.x, info.pt.y)
+            except Exception:
+                pass
+            return _user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+        self._proc = _LowLevelMouseProc(_proc)
+        hmod = _kernel32.GetModuleHandleW(None)
+        self._hook = _user32.SetWindowsHookExW(_WH_MOUSE_LL, self._proc, hmod, 0)
+        if not self._hook:
+            logger.warning("_MouseHook: SetWindowsHookExW failed")
+
+    def uninstall(self) -> None:
+        if self._hook:
+            _user32.UnhookWindowsHookEx(self._hook)
+            self._hook = None
+            self._proc = None
+
+
+# ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
 
@@ -492,7 +561,9 @@ class _PaletteDialog(QDialog):
         super().__init__()
         self._config = config
         self._dismissed = False
+        self._entry_complete = False
         self._entry_group: QParallelAnimationGroup | None = None
+        self._mouse_hook: _MouseHook | None = None
 
         self._setup_window()
         self._setup_ui()
@@ -615,6 +686,8 @@ class _PaletteDialog(QDialog):
         self.show()
         self.activateWindow()
         QApplication.instance().installEventFilter(self)
+        self._mouse_hook = _MouseHook()
+        self._mouse_hook.install(self._on_outside_click)
 
         pos_anim = QPropertyAnimation(self, b"pos", self)
         pos_anim.setDuration(_FADE_IN_MS)
@@ -630,6 +703,7 @@ class _PaletteDialog(QDialog):
         self._entry_group = QParallelAnimationGroup(self)
         self._entry_group.addAnimation(pos_anim)
         self._entry_group.addAnimation(fade_anim)
+        self._entry_group.finished.connect(lambda: setattr(self, "_entry_complete", True))
         self._entry_group.start()
 
     # ------------------------------------------------------------------
@@ -641,6 +715,9 @@ class _PaletteDialog(QDialog):
             return
         self._dismissed = True
         QApplication.instance().removeEventFilter(self)
+        if self._mouse_hook is not None:
+            self._mouse_hook.uninstall()
+            self._mouse_hook = None
         anim = QPropertyAnimation(self, b"windowOpacity", self)
         anim.setDuration(_FADE_OUT_MS)
         anim.setStartValue(self.windowOpacity())
@@ -653,10 +730,30 @@ class _PaletteDialog(QDialog):
     # Events
     # ------------------------------------------------------------------
 
+    def _on_outside_click(self, x: int, y: int) -> None:
+        if self._dismissed or not self._entry_complete:
+            return
+        dpr = self.devicePixelRatioF() or 1.0
+        lp = QPoint(int(x / dpr), int(y / dpr))
+        if not self.geometry().contains(lp):
+            self._cancel()
+
+    def event(self, e) -> bool:  # noqa: N802
+        if (
+            e.type() == QEvent.Type.WindowDeactivate
+            and self._entry_complete
+            and not self._dismissed
+        ):
+            self._cancel()
+        return super().event(e)
+
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if event.type() == QEvent.Type.MouseButtonPress:
             gp = event.globalPosition().toPoint()
             if not self.geometry().contains(gp):
+                self._cancel()
+        elif event.type() == QEvent.Type.ApplicationDeactivated:
+            if self._entry_complete and not self._dismissed:
                 self._cancel()
         return False
 
