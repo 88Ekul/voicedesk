@@ -1,95 +1,119 @@
 # VoiceDesk
-
-Local speech-to-text dictation tool for Windows 11. Press a hotkey to start recording, press again to stop — the transcription is pasted into whatever window is focused.
-
-GPU acceleration uses **Vulkan** (AMD Radeon 860M). No ROCm or CUDA required.
-
+A free, offline, local push-to-talk dictation tool for Windows 11. 
+Built as a personal alternative to commercial solutions like Wispr 
+Flow. Runs entirely on-device — no cloud, no telemetry, no account.
+Hold `Ctrl+Win` to record. Release to transcribe and paste into the 
+focused window.
 ---
-
+## Stack
+- **Transcription:** faster-whisper, `small.en` model, CPU, int8 
+  quantisation, kept in memory
+- **Audio capture:** sounddevice (16 kHz mono WAV)
+- **Global hotkey:** keyboard (Ctrl+Win push-to-talk)
+- **UI:** PyQt6 (recording pill overlay, short-press palette)
+- **Tray icon:** pystray
+- **Clipboard paste:** pyperclip
+A Vulkan/whisper.cpp + `medium.en` upgrade path is planned but not 
+yet active. See `docs/HANDOVER_*.md` for status.
+---
 ## Prerequisites
-
-### 1. whisper.cpp Vulkan binary
-
-Download `whisper-cpp.exe` from the Vulkan Windows binary release:
-
-> **https://github.com/jerryshell/whisper.cpp-windows-vulkan-bin**
-
-Place `whisper-cpp.exe` in the **project root** (same folder as `main.py`).
-
-### 2. Whisper model weights
-
-Download `ggml-medium.en.bin` from Hugging Face:
-
-> **https://huggingface.co/ggerganov/whisper.cpp**
-
-Place the file in the `models/` folder:
-
-```
-voicedesk/
-  models/
-    ggml-medium.en.bin
-```
-
+Python 3.x on Windows 11. The `keyboard` library requires elevated 
+privileges for global hooks, so VoiceDesk must be run as 
+Administrator.
 ---
-
 ## Installation
-
 ```bash
 pip install -r requirements.txt
 ```
-
+The `small.en` faster-whisper model downloads automatically on first 
+run.
 ---
-
+## Launch
+```
+python .\main.py --worker
+```
+The `--worker` flag is **mandatory**. Without it, the watchdog 
+triggers and spawns a second instance. Kill any stale instances with 
+`taskkill /F /IM python.exe /T` before relaunching.
+Auto-start at login is handled by Task Scheduler with a 30–35 second 
+delay using `pythonw.exe`.
+---
+## Usage
+A rose-gold circle appears in the system tray.
+- **Hold `Ctrl+Win`** — recording pill overlay appears, mic captures
+- **Release** — transcription runs, text pastes into the focused 
+  window
+- **Click the red ✕ on the pill** — cancels (no paste, low beep)
+- **Click the green ■ on the pill** — stops and pastes to the 
+  originally focused window even if focus has since changed
+- **Short-press `Ctrl+Win`** (under hold threshold) — opens a 2×2 
+  palette with Dictionary, Snippets, Recent, and Settings entries
+If the recording RMS is below the silence threshold, transcription 
+is skipped and a low beep plays — no empty pastes.
+Logs are written to `logs/voicedesk.log`.
+---
+## Text processing pipeline
+Every transcription passes through three stages in order, all hot-
+reloadable via mtime check on their config files:
+1. **Corrections** (`config/corrections.json`) — case-insensitive 
+   word/phrase replacements for proper nouns and known 
+   misrecognitions
+2. **Snippets** (`config/snippets.json`) — partial-phrase triggers, 
+   word-boundary matching (gitignored; contains personal data)
+3. **Fillers** (`config/fillers.json`) — strips configured filler 
+   words such as "um", "uh", "you know"
+---
 ## Configuration
-
-Edit `config/config.yaml` to adjust settings:
-
+Edit `config/config.yaml` to adjust runtime settings:
 | Key | Default | Description |
 |-----|---------|-------------|
-| `hotkey` | `ctrl+win` | Global toggle hotkey |
-| `model` | `medium.en` | Whisper model name |
-| `model_path` | `./models/` | Directory containing model weights |
-| `vulkan` | `true` | Enable Vulkan GPU acceleration |
-| `auto_paste` | `true` | Automatically paste after transcription |
+| `hotkey` | `ctrl+win` | Global push-to-talk hotkey |
+| `model` | `small.en` | faster-whisper model name |
+| `rms_threshold` | `0.003` | Silence fast-fail threshold (normalised int16 RMS) |
 | `max_duration_seconds` | `120` | Maximum recording length |
 | `audio_device` | `null` | Input device (null = system default) |
-| `fallback_to_cpu` | `true` | Use faster-whisper CPU if whisper.cpp fails |
-
+| `output_style` | varies | Post-processing style applied to output |
 ---
-
-## Usage
-
-```bash
-python main.py
-```
-
-A grey circle appears in the system tray.
-
-- **Press `Ctrl+Win`** — icon turns red, recording begins
-- **Press `Ctrl+Win` again** — recording stops, transcription runs, text is pasted
-
-Logs are written to `logs/voicedesk.log`.
-
----
-
 ## Architecture
-
 | Module | Responsibility |
 |--------|---------------|
-| `main.py` | Entry point, logging, wires all modules together |
+| `main.py` | Orchestrator, lifecycle, `_terminate_recording` convergence, `_process()` pipeline |
 | `config_loader.py` | Loads and validates `config/config.yaml` |
-| `audio.py` | Mic capture via sounddevice → 16kHz mono WAV |
-| `transcribe.py` | whisper.cpp subprocess (Vulkan) + faster-whisper fallback |
-| `paste.py` | Clipboard save/restore + Ctrl+V |
-| `tray.py` | pystray system tray icon (idle/recording states) |
-| `hotkey.py` | Global toggle hotkey via keyboard library |
-
+| `audio.py` | Mic capture via sounddevice → 16 kHz mono WAV |
+| `transcribe.py` | faster-whisper wrapper, hallucination blocklist, VAD config |
+| `text_processing.py` | Corrections → snippets → fillers pipeline |
+| `paste.py` | Clipboard save/restore + window-targeted Ctrl+V |
+| `tray.py` | pystray system tray icon |
+| `hotkey.py` | Global push-to-talk listener, state machine, stuck-state self-heal |
+| `overlay.py` | Recording pill overlay with Stop/Cancel buttons |
+| `menu.py` | Ctrl+Win short-press palette (Dictionary, Snippets, Recent, Settings) |
 ---
-
+## Documentation
+All canonical documentation lives in [`docs/`](./docs/):
+- [`docs/README.md`](./docs/README.md) — how the docs folder works
+- [`docs/PROJECT_SPEC.md`](./docs/PROJECT_SPEC.md) — vision, stack, 
+  module map, ADR log
+- [`docs/HANDOVER_*.md`](./docs/) — append-only session-by-session 
+  deltas (most recent = current state)
+- [`docs/LEARNINGS.md`](./docs/LEARNINGS.md) — append-only failure 
+  modes and findings
+For current build state and what's next, read the latest 
+`HANDOVER_*.md` first.
+---
 ## Troubleshooting
-
-**Hotkey not working** — Run `main.py` as Administrator (the `keyboard` library requires elevated privileges for global hooks on Windows).
-
-**whisper.cpp not found** — Ensure `whisper-cpp.exe` is in the project root. VoiceDesk will automatically fall back to faster-whisper CPU if the exe is missing and `fallback_to_cpu: true` is set.
-
-**No audio captured** — Check that your microphone is set as the default recording device in Windows Sound settings. Set `audio_device` in config to a specific device name or index if needed.
+**Hotkey not working** — Run as Administrator. The `keyboard` 
+library requires elevated privileges for global hooks on Windows.
+**Two instances launching at login** — Check that only one of Task 
+Scheduler or Startup folder shortcut is active. Running both causes 
+duplication. Task Scheduler is the canonical method.
+**No audio captured** — Check that your microphone is set as the 
+default recording device in Windows Sound settings. Set 
+`audio_device` in config to a specific device name or index if 
+needed.
+**Empty pastes / "you" hallucinations on silence** — Both are 
+guarded against (RMS fast-fail and a hallucination blocklist in 
+`transcribe.py`). If you see one, raise it via the handover 
+workflow.
+**Stuck hotkey state** — `hotkey.py` self-heals on the next fresh 
+key-down if the prior press is stale. If you suspect a stuck state, 
+press and release Ctrl+Win once to reset.
