@@ -189,7 +189,7 @@ class HotkeyListener:
                 # This prevents stuck keys in _held from triggering partial combos.
                 if not all(p in self._held for p in self._parts):
                     return
-                if any(now - self._last_press_times.get(p, 0.0) > 0.5 for p in self._parts):
+                if any(now - self._last_press_times.get(p, 0.0) > 2.0 for p in self._parts):
                     logger.debug("Combo parts present but stale — ignoring (stuck key?)")
                     return
 
@@ -231,7 +231,7 @@ class HotkeyListener:
                     logger.info("Hold released after %.2fs — stopping recording", elapsed)
                     if self._on_stop:
                         self._on_stop()
-                    self._ignore_until = now + 5.0
+                    self._ignore_until = now + 0.5
                 else:
                     logger.info("Tap detected (%.2fs) — firing on_tap callback (listener=%x)", elapsed, id(self))
                     if self._on_tap:
