@@ -88,7 +88,7 @@ def transcribe(audio_path: str, config: dict) -> str:
         vad_filter=True,
         vad_parameters={
             "min_silence_duration_ms": 500,
-            "min_speech_duration_ms": 300,
+            "min_speech_duration_ms": 150,
         },
         condition_on_previous_text=False,
     )

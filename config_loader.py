@@ -44,7 +44,7 @@ def load_config(path: str = CONFIG_PATH) -> dict:
         raise ValueError(f"Config is missing required keys: {', '.join(missing)}")
 
     config.setdefault("output_style", "formal")
-    config.setdefault("rms_threshold", 0.01)
+    config.setdefault("rms_threshold", 0.001)
 
     return config
 

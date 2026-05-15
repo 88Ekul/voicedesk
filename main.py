@@ -231,8 +231,8 @@ def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
         try:
             _, samples = wav.read(audio_file)
             rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) / 32768.0
-            logger.debug("Pre-transcription RMS: %.5f", rms)
-            threshold = _config.get("rms_threshold", 0.01)
+            logger.info("Pre-transcription RMS: %.5f", rms)
+            threshold = _config.get("rms_threshold", 0.001)
             if rms < threshold:
                 logger.info(
                     "Skipping transcription — RMS %.5f below threshold %.5f", rms, threshold
