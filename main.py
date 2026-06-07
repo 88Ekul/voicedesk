@@ -225,6 +225,32 @@ def _start_recording() -> None:
     _audio_thread.start()
 
 
+def _write_query_json(text: str) -> None:
+    """Write a JSON query file to the Second-Brain-OS query service inbox."""
+    import json
+    from datetime import datetime, timezone
+
+    query_inbox = _config.get("query_inbox_path")
+    if not query_inbox:
+        logger.warning("query_inbox_path not set in config — skipping JSON write")
+        return
+    try:
+        os.makedirs(query_inbox, exist_ok=True)
+        now = datetime.now(timezone.utc)
+        filename = now.strftime("query_%Y%m%d_%H%M%S.json")
+        filepath = os.path.join(query_inbox, filename)
+        payload = {
+            "query_text": text,
+            "captured_at": now.isoformat(),
+            "source": "voicedesk",
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        logger.info("Query JSON written: %s", filepath)
+    except Exception as exc:
+        logger.error("Failed to write query JSON: %s", exc)
+
+
 def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
     """Transcribe and either paste or save to inbox.  Runs in serial executor."""
     try:
@@ -269,6 +295,7 @@ def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
                 os.path.expanduser("~/Documents/inbox"),
             )
             paste.save_to_inbox(text, inbox_path)
+            _write_query_json(text)
             _beep(660, 80)
             _beep(880, 80)
         else:
@@ -301,9 +328,9 @@ def _on_hold() -> None:
 
 
 def _on_hold_inbox() -> None:
-    """Hold threshold reached on inbox hotkey — transcribe and save to inbox."""
+    """Hold threshold reached on inbox hotkey — transcribe and save to vault inbox. No paste."""
     global _recording_mode
-    _recording_mode = "inbox_and_paste"
+    _recording_mode = "inbox"
     _start_recording()
 
 
