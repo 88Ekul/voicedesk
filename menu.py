@@ -14,8 +14,10 @@ Public API:
 
 import ctypes
 import ctypes.wintypes
+import json
 import logging
 import math
+import os
 
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -68,6 +70,18 @@ _FONT          = "Segoe UI"
 
 _FADE_IN_MS  = 200
 _FADE_OUT_MS = 150
+
+
+_CONFIG_DIR = os.path.dirname(config_loader.CONFIG_PATH)
+
+
+def _open_json_in_editor(filename: str, default) -> None:
+    """Open a config JSON in the default editor; create a stub if absent."""
+    path = os.path.join(_CONFIG_DIR, filename)
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=2)
+    os.startfile(path)
 
 
 def _rose_alpha(a: int) -> QColor:
@@ -774,8 +788,22 @@ class _PaletteDialog(QDialog):
     # Actions
     # ------------------------------------------------------------------
 
+    _TILE_FILES = {
+        "dictionary": ("corrections.json", {}),
+        "snippets":   ("snippets.json",    {}),
+        "recent":     ("recent.json",      []),
+    }
+
     def _on_tile(self, tile_id: str) -> None:
-        logger.info("Palette: opened %s", tile_id)
+        spec = self._TILE_FILES.get(tile_id)
+        if spec is not None:
+            fname, default = spec
+            try:
+                _open_json_in_editor(fname, default)
+            except Exception as exc:
+                logger.warning("Could not open %s: %s", fname, exc)
+        else:
+            logger.info("Palette: %s not yet implemented", tile_id)
         self._cancel()
 
     def _on_style_change(self, val: str) -> None:

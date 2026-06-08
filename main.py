@@ -225,6 +225,32 @@ def _start_recording() -> None:
     _audio_thread.start()
 
 
+def _append_recent(text: str, mode: str) -> None:
+    """Append to the rolling recent.json log (max 5, newest first). Never raises."""
+    import json
+    from datetime import datetime, timezone
+    recent_path = os.path.join(
+        os.path.dirname(config_loader.CONFIG_PATH), "recent.json"
+    )
+    try:
+        entries = []
+        if os.path.exists(recent_path):
+            with open(recent_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, list):
+                    entries = loaded
+        entries.insert(0, {
+            "text": text,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "mode": mode,
+        })
+        entries = entries[:5]
+        with open(recent_path, "w", encoding="utf-8") as f:
+            json.dump(entries, f, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        logger.warning("Failed to append recent transcription: %s", exc)
+
+
 def _write_query_json(text: str) -> None:
     """Write a JSON query file to the Second-Brain-OS query service inbox."""
     import json
@@ -279,6 +305,8 @@ def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
         text = text_processing.apply_corrections(text)
         text = text_processing.apply_snippets(text)
         text = text_processing.apply_fillers(text)
+
+        _append_recent(text, mode)
 
         if mode in ("inbox_and_paste", "inbox_fallback"):
             inbox_path = _config.get(
