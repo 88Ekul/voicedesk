@@ -26,3 +26,27 @@ The `WH_MOUSE_LL` hook receives mouse coordinates in physical pixels. Qt widget 
 A single rejection log line (`Skipping transcription — RMS 0.00297 below threshold 0.00300`) ended a months-long suspicion that quiet-speech failures were a model accuracy problem. The fix was a config value, not an architecture change. Takeaway: always grep the logs for the failure path before theorising about deeper causes.
 15 May 2026 — Hardcoded constants in timing-sensitive code paths deserve config exposure
 The hotkey freshness window (500ms) and post-hold cooldown (5s) were both reasonable defaults that became friction points only when real usage exposed them. Future timing-related constants should land in `config.yaml` from the start, with sensible defaults in `config_loader.py`. Takeaway: if a constant controls observable behaviour, make it configurable before it bites.
+---
+## Dead keyboard hook — silent failure mode (observed 12 June 2026, 2nd occurrence)
+SYMPTOM: VoiceDesk appears to run (tray icon present, single-instance mutex held)
+but NO hotkey responds on any mode. Manual relaunch reports "VoiceDesk already
+running — exiting" because the stale instance still holds the mutex.
+DIAGNOSIS: The log shows a clean startup (config loaded, tray started, both hotkeys
+registered, model cached) followed by total silence — no errors, no self-heal, no
+hook exception. Silence in the log = no key event has been seen by the listener.
+Windows had silently dropped the low-level keyboard hook (WH_KEYBOARD_LL); the
+process kept running but received no key events. No exception is raised, which is
+why nothing logs. The hook self-heal logic in hotkey.py did NOT catch it.
+HOW TO CONFIRM: `Get-Process pythonw` reveals the live instance (auto-start uses
+pythonw.exe, NOT python.exe — so `taskkill /F /IM python.exe` does NOT kill it; that
+is a blind spot in the kill ritual). Check log tail: a healthy startup with no usage
+entries after it = deaf hook.
+RECOVERY: Kill the stale instance by exact PID (`Stop-Process -Id <pid> -Force` —
+not a blind sweep, to protect Antigravity's runtime and the second-brain-query venv),
+then relaunch `python .\main.py --worker`. Hook re-arms on fresh start.
+PATTERN: This is the 2nd observed occurrence. The self-heal in hotkey.py does not
+detect a hook that has gone deaf without raising. FUTURE TASK (reliability, sits with
+the msvcrt instance-lock item): add a hook watchdog — a heartbeat that detects a
+prolonged absence of events and periodically re-registers / re-arms the hook without
+a manual kill. Also consider adding pythonw.exe to the kill ritual (carefully — other
+pythonw processes can exist).

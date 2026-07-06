@@ -166,3 +166,24 @@ threshold rejected real speech and was lowered.
 Both methods running simultaneously caused VoiceDesk to launch twice 
 on login. Task Scheduler retained for its 30–35 second delay 
 capability; Startup folder shortcut removed.
+
+### ADR-011 — Query-JSON contract is append-only, widened by need not speculation
+The query-JSON contract between VoiceDesk and Second-Brain-OS
+(`{ query_text, captured_at, source }`, written to
+`second-brain-query\inbox`) is live, not frozen. The 8 June convergence note
+treated the three-field schema as fixed; that was premature. The contract will
+widen once Second-Brain's answer-synthesis step is built, because synthesis may
+require richer input than `query_text` alone (likely candidates: a query-type
+field and/or conversation-threading for spoken follow-ups). Those fields are
+deliberately not designed yet — they cannot be specified until synthesis is built
+far enough to reveal what it actually needs; designing them now would be guessing.
+Governing principle: the contract is APPEND-ONLY. Consumers ignore fields they do
+not recognise. Second-Brain reads `query_text` and tolerates any additional
+fields; VoiceDesk may add fields later without breaking the far side. This keeps
+the two projects cleanly decoupled — the seam widens once, driven by a concrete
+need surfaced in building, not by speculation up front. Build sequence:
+(1) VoiceDesk reliability cluster [deaf-hook / watchdog-blindness / kill-ritual],
+(2) VoiceDesk Alba gating under the current three-field contract,
+(3) Second-Brain answer synthesis, (4) VoiceDesk second act — emit the richer
+fields synthesis has revealed a need for. See `docs/CONTRACT_STATUS_05_JUL.md`
+for the full cross-project note.

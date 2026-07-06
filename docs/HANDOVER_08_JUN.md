@@ -78,35 +78,61 @@ call site correctly placed below the empty guard and before the mode branch.
    `rms_threshold`, `output_style`, and the filler list, editable without opening
    YAML. This is a form-building task (heterogeneous inputs: float, enum, list) —
    its own session by design. Largest of the four submenu tasks.
-2. **Recent in-app panel (option 2)** — possible, sequenced before the full Flow
+2. **Alba prefix gating on Alt+Win — split the dual-write** ← next build task
+   PROBLEM: Alt+Win currently writes BOTH the inbox `.md` AND the query JSON on
+   every use, so every Alt+Win dictation is spoken back by Alba — including plain
+   capture notes. No clean silent-capture mode exists.
+   DESIRED BEHAVIOUR (Alt+Win release):
+   - Default: SILENT capture. Write the `00_INBOX` `.md` only. Do NOT write the
+     query JSON. Alba stays silent.
+   - If the transcript begins with the trigger word "Alba": treat as a query. Strip
+     the trigger word, write the query JSON (`query_text` = remainder) to the
+     second-brain-query inbox. DECIDED: the Alba branch writes BOTH — the inbox
+     `.md` AND the query JSON — so every spoken query also leaves a capture record
+     (Alba's spoken answer is ephemeral; keep the asked question on disk).
+   Intent is carried inside the existing one-shot gesture — no menu, no second key,
+   no dialogue. Push-to-talk speed preserved.
+   OPEN DESIGN CALL (resolve at build time, not before): trigger-word robustness.
+   faster-whisper mis-hears "Alba" (e.g. "Elbow", "Alber"). Before committing to a
+   word, run an empirical test — say "Alba" into the live pipeline ~12 times and see
+   what Whisper actually returns — then either pick a reliably-heard word or accept a
+   small spelling set. Make the check case-insensitive and tolerant of leading
+   "Hey Alba" / "Alba," with punctuation.
+   CONTRACT UNCHANGED: query JSON stays `{ query_text, captured_at, source }`. The
+   Second-Brain query service needs no change. SCOPE: VoiceDesk only — do not touch
+   the Second-Brain side.
+   IMPLEMENTATION NOTE: re-read `_process()` and `_write_query_json()` in `main.py`
+   to locate the current dual-write — line numbers in the original brief are stale
+   after the Phase 1 edits shifted everything below ~line 309. Verify before editing.
+3. **Recent in-app panel (option 2)** — possible, sequenced before the full Flow
    editors but not committed. Replace the open-in-editor behaviour for Recent with
    a read-only list panel inside the palette (reusing Rose Gold / slate styling) to
    show the last 5 transcriptions natively. Data side already solved — `recent.json`
    logs correctly; only the display panel remains. No urgency.
-3. **Full Flow-style in-app editors for Dictionary + Snippets (option 3)** — future,
+4. **Full Flow-style in-app editors for Dictionary + Snippets (option 3)** — future,
    explicitly not soon. Add/edit/delete rows for corrections and snippets directly
    in the palette, mirroring Wispr Flow's Dictionary and Snippets panels. Big PyQt
    build, same class of effort as the Settings panel. Deferred under rule-of-three —
    build only once raw-JSON editing in VS Code proves annoying in daily use.
-4. **Repo hygiene — untrack auto-generated files (carried)**
+5. **Repo hygiene — untrack auto-generated files (carried)**
    `__pycache__/*.pyc` and `logs/voicedesk.log` are still tracked. Run
    `git rm -r --cached __pycache__/` and `git rm --cached logs/voicedesk.log`,
    then commit. (Manual git — not done in-session.)
-5. **Whisper `initial_prompt` / custom vocabulary (carried)**
+6. **Whisper `initial_prompt` / custom vocabulary (carried)**
    Add `whisper_prompt` field to `config.yaml`, pass as `initial_prompt` to
    faster-whisper in `transcribe.py`. Hot-reloadable.
-6. **Transcription quality upgrade (carried)**
+7. **Transcription quality upgrade (carried)**
    Upgrade to whisper.cpp + medium.en via Vulkan. Vulkan path currently failing
    silently. First step: test `whisper-cli.exe` directly with medium.en.
-7. **Style processing pipeline (carried, re-scoped)**
+8. **Style processing pipeline (carried, re-scoped)**
    Wire `output_style` from config into transcription output. NOTE re-scope: Wispr
    Flow's Style is rule-based (Formal = caps + punctuation; Casual = caps + less
    punctuation; Very casual = no caps + less punctuation), NOT LLM-based. So this is
    a deterministic casing/punctuation pass in `text_processing.py`, not an AI
    feature — local-first compatible. Achievable without cloud.
-8. **Logging housekeeping (carried)** — revert log level to INFO once RMS settled.
-9. **Instance lock robustness (carried)** — patch using `msvcrt`.
-10. **Quiet-speech tuning (carried)** — tune `min_silence_duration_ms` if needed.
+9. **Logging housekeeping (carried)** — revert log level to INFO once RMS settled.
+10. **Instance lock robustness (carried)** — patch using `msvcrt`.
+11. **Quiet-speech tuning (carried)** — tune `min_silence_duration_ms` if needed.
 ### Explicitly struck from the roadmap
 - **Transforms (Wispr Flow's AI rewrite actions — Polish, Prompt Engineer)** — NOT
   building. Requires a cloud LLM in the loop, which contradicts VoiceDesk's
