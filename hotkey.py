@@ -55,6 +55,7 @@ class HotkeyListener:
         self._hook = None
         self._suppressor = None
         self._win_down_suppressed: bool = False
+        self._win_is_down: bool = False
         self._parts: list[str] = []
         self._held: set[str] = set()
         self._all_held: set[str] = set()        # all currently-held modifier keys
@@ -117,6 +118,7 @@ class HotkeyListener:
         self._hook = keyboard.hook(self._handle_event, suppress=False)
         # Suppress only the Win key when pressed as part of the combo.
         self._win_down_suppressed = False
+        self._win_is_down = False
         self._suppressor = keyboard.hook(self._suppress_combo, suppress=True)
         with _listeners_lock:
             if self not in _listeners:
@@ -247,13 +249,15 @@ class HotkeyListener:
             self._on_hold()
 
     def _suppress_combo(self, event: keyboard.KeyboardEvent) -> bool:
-        """Selectively suppress Win key events when all other combo parts are held.
+        """Selectively suppress Win key events when pressed as part of the combo.
 
-        Generalised: derives the guard keys from self._parts so this works for
-        both ctrl+win and ctrl+shift+win without hardcoding key names.
-        Returns False (suppress) only when Win goes down/up as part of this
-        specific combo, leaving Win-alone free to open Start Menu.
-        True means 'allow the event through'.
+        The suppress/pass decision is made ONCE, at the initial Win key-down,
+        and applied to the entire press lifecycle (initial down, auto-repeats,
+        and the final up).  Deciding per-event caused a stuck Win key:
+        releasing the guard key (e.g. ctrl) a fraction before Win let a
+        trailing auto-repeat pass through to the OS raw while the matching
+        key-up was still suppressed, leaving the OS convinced Win was held.
+        Returns False to suppress the event, True to allow it through.
         """
         key = _canon(event.name)
         # Track modifier state for the guard computation.
@@ -263,15 +267,22 @@ class HotkeyListener:
             else:
                 self._suppressor_held.discard(key)
         if key == "win" and "win" in self._parts:
-            guards = set(self._parts) - {"win"}
-            if event.event_type == keyboard.KEY_DOWN and guards.issubset(self._suppressor_held):
-                self._win_down_suppressed = True
-                _broadcast_to_all(event)
-                return False  # suppress Win while guard keys held
-            if event.event_type == keyboard.KEY_UP and self._win_down_suppressed:
-                self._win_down_suppressed = False
-                _broadcast_to_all(event)
-                return False  # suppress matching Win release
+            if event.event_type == keyboard.KEY_DOWN:
+                if not self._win_is_down:
+                    # Initial down of a new press — decide for the whole press.
+                    self._win_is_down = True
+                    guards = set(self._parts) - {"win"}
+                    self._win_down_suppressed = guards.issubset(self._suppressor_held)
+                # Auto-repeats inherit the initial decision.
+                if self._win_down_suppressed:
+                    _broadcast_to_all(event)
+                    return False
+            else:  # KEY_UP
+                self._win_is_down = False
+                if self._win_down_suppressed:
+                    self._win_down_suppressed = False
+                    _broadcast_to_all(event)
+                    return False
         return True  # allow everything else
 
     # ------------------------------------------------------------------

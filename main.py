@@ -447,8 +447,10 @@ def _terminate_recording(cancel: bool, pinned_hwnd: int | None = None) -> None:
 
 
 def _on_stop() -> None:
-    """Key released while recording — stop and transcribe."""
-    _terminate_recording(cancel=False)
+    """Key released while recording — stop and transcribe (async: hook must return fast)."""
+    threading.Thread(
+        target=_terminate_recording, args=(False,), daemon=True, name="hotkey-stop"
+    ).start()
 
 
 def _on_tap() -> None:
