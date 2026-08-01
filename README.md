@@ -5,6 +5,10 @@ Flow. Runs entirely on-device — no cloud, no telemetry, no account.
 Hold `Ctrl+Win` to record. Release to transcribe and paste into the 
 focused window.
 ---
+## Licence
+
+Source-available under the PolyForm Strict License 1.0.0 — you may view and evaluate this code, but not reuse, redistribute, or create derivative works without written permission. See [LICENSE.md](./LICENSE.md).
+---
 ## Stack
 - **Transcription:** faster-whisper, `small.en` model, CPU, int8 
   quantisation, kept in memory
@@ -25,6 +29,8 @@ Administrator.
 ```bash
 pip install -r requirements.txt
 ```
+Copy `config/config.example.yaml` to `config/config.yaml` and set 
+your own paths before first run.
 The `small.en` faster-whisper model downloads automatically on first 
 run.
 ---
@@ -33,8 +39,12 @@ run.
 python .\main.py --worker
 ```
 The `--worker` flag is **mandatory**. Without it, the watchdog 
-triggers and spawns a second instance. Kill any stale instances with 
-`taskkill /F /IM python.exe /T` before relaunching.
+triggers and spawns a second instance. Kill stale instances by exact PID, not a blind image sweep. 
+Identify the VoiceDesk process with 
+`Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'"` 
+(look for `main.py --worker` in the CommandLine), then 
+`Stop-Process -Id <pid> -Force`. A blind `taskkill /IM` sweep can 
+kill unrelated Python processes.
 Auto-start at login is handled by Task Scheduler with a 30–35 second 
 delay using `pythonw.exe`.
 ---
@@ -47,7 +57,11 @@ A rose-gold circle appears in the system tray.
 - **Click the green ■ on the pill** — stops and pastes to the 
   originally focused window even if focus has since changed
 - **Short-press `Ctrl+Win`** (under hold threshold) — opens a 2×2 
-  palette with Dictionary, Snippets, Recent, and Settings entries
+  palette with Dictionary, Snippets, Recent, and Settings (stub) entries
+A second hotkey, `Alt+Win`, captures spoken notes to a 
+configurable inbox path as Markdown/JSON — used as the voice 
+front-end for a separate personal system. Set `inbox_path` and 
+`query_inbox_path` in config.
 If the recording RMS is below the silence threshold, transcription 
 is skipped and a low beep plays — no empty pastes.
 Logs are written to `logs/voicedesk.log`.
@@ -69,10 +83,10 @@ Edit `config/config.yaml` to adjust runtime settings:
 |-----|---------|-------------|
 | `hotkey` | `ctrl+win` | Global push-to-talk hotkey |
 | `model` | `small.en` | faster-whisper model name |
-| `rms_threshold` | `0.003` | Silence fast-fail threshold (normalised int16 RMS) |
+| `rms_threshold` | `0.001` | Silence fast-fail threshold (normalised int16 RMS) |
 | `max_duration_seconds` | `120` | Maximum recording length |
 | `audio_device` | `null` | Input device (null = system default) |
-| `output_style` | varies | Post-processing style applied to output |
+| `output_style` | varies | Reserved — persisted to config but not yet wired to transcription |
 ---
 ## Architecture
 | Module | Responsibility |
@@ -86,7 +100,7 @@ Edit `config/config.yaml` to adjust runtime settings:
 | `tray.py` | pystray system tray icon |
 | `hotkey.py` | Global push-to-talk listener, state machine, stuck-state self-heal |
 | `overlay.py` | Recording pill overlay with Stop/Cancel buttons |
-| `menu.py` | Ctrl+Win short-press palette (Dictionary, Snippets, Recent, Settings) |
+| `menu.py` | Ctrl+Win short-press palette (Dictionary, Snippets, Recent, Settings (stub)) |
 ---
 ## Documentation
 All canonical documentation lives in [`docs/`](./docs/):

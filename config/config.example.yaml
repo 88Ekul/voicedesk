@@ -1,0 +1,12 @@
+hotkey: ctrl+win
+inbox_hotkey: alt+win
+model: small.en
+model_path: ./models/
+auto_paste: true
+max_duration_seconds: 120
+audio_device:
+hold_threshold_seconds: 0.8
+inbox_path: C:/path/to/your/inbox
+query_inbox_path: C:/path/to/your/query/inbox
+output_style: formal
+rms_threshold: 0.001  # normalised int16 RMS; ~-60 dBFS — raise to skip quiet speech, lower to skip only dead silence

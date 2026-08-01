@@ -21,6 +21,7 @@ __pycache__/
 # Personal data — not for version control
 config/snippets.json
 config/recent.json
+config/config.yaml
 
 # OS
 Thumbs.db

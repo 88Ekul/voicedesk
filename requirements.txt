@@ -1,8 +1,9 @@
-faster-whisper
-sounddevice
-scipy
-pyperclip
-keyboard
-pystray
-Pillow
-ruamel.yaml
+faster-whisper==1.2.1
+sounddevice==0.5.5
+scipy==1.17.1
+pyperclip==1.11.0
+keyboard==0.13.5
+pystray==0.19.5
+Pillow==12.2.0
+ruamel.yaml==0.19.1
+PyQt6==6.11.0

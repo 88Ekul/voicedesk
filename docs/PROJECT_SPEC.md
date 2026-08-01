@@ -96,8 +96,12 @@ changes.
 
 1. Always run Antigravity IDE as Administrator.
 2. Always launch with `--worker`.
-3. Kill stale instances with `taskkill /F /IM python.exe /T` before 
-   relaunching.
+3. Kill stale instances by exact PID (`Stop-Process -Id <pid> -Force`), 
+   identified via `Get-CimInstance Win32_Process` filtered for 
+   `main.py --worker`. Never use a blind `taskkill /IM` image 
+   sweep — it misses the pythonw.exe auto-start instance and 
+   endangers unrelated Python processes. (Amended per R1, 
+   replacing the original taskkill rule.)
 4. Use `Select-String` in PowerShell, not `grep`.
 5. Verify bug shape in logs before writing any fix.
 6. Read the full relevant method before writing any fix.
@@ -160,7 +164,10 @@ Normalised int16 RMS is computed from the saved WAV before
 transcription. Below threshold (currently `0.003`), transcription is 
 skipped and a low beep plays. If the WAV read fails, the code falls 
 through to transcription normally (fail-open). The earlier `0.01` 
-threshold rejected real speech and was lowered.
+threshold rejected real speech and was lowered. 
+**Amendment (17 Jul 2026):** threshold lowered again to `0.001` after live
+calibration against the actual microphone noise floor; `0.003` was still
+rejecting quiet speech. The fail-open behaviour is unchanged.
 
 ### ADR-010 — Task Scheduler chosen over Startup folder shortcut
 Both methods running simultaneously caused VoiceDesk to launch twice 
