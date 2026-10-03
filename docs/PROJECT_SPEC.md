@@ -82,7 +82,8 @@ running both simultaneously causes duplication.
 ## Config files
 
 - `config/config.yaml` — runtime config (rms_threshold, output_style, 
-  whisper_prompt when added)
+  whisper_prompt). whisper_prompt is optional, empty by default, and 
+  hot-reloads via mtime on each transcription.
 - `config/corrections.json` — case-insensitive word/phrase 
   replacements
 - `config/snippets.json` — partial-phrase triggers (personal data; 
