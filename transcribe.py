@@ -1,7 +1,15 @@
-"""Transcription via faster-whisper (CPU int8). Model is loaded once and kept in memory."""
+"""Transcription via faster-whisper (CPU int8). Model is loaded once and kept in memory.
+
+An optional whisper_prompt from config is passed as initial_prompt when set,
+so the local small.en model is biased toward those proper nouns. The field
+is re-read from config.yaml on each call. Empty leaves the transcribe
+arguments unchanged.
+"""
 
 import logging
 import os
+
+import config_loader
 
 logger = logging.getLogger(__name__)
 
@@ -68,30 +76,48 @@ def warmup(config: dict) -> None:
         logger.warning("Model warmup failed: %s", exc)
 
 
+def _transcribe_kwargs(prompt: str) -> dict:
+    """Build WhisperModel.transcribe arguments.
+
+    A blank prompt is omitted, so the call matches the arguments used
+    before this field existed.
+    """
+    kwargs = {
+        "vad_filter": True,
+        "vad_parameters": {
+            "min_silence_duration_ms": 500,
+            "min_speech_duration_ms": 150,
+        },
+        "condition_on_previous_text": False,
+    }
+    if prompt:
+        kwargs["initial_prompt"] = prompt
+    return kwargs
+
+
 def transcribe(audio_path: str, config: dict) -> str:
     """Transcribe an audio file to text using faster-whisper (CPU int8).
 
     Uses Silero VAD to strip non-speech segments before transcription, which
     eliminates the common "You" / "Thank you" hallucinations on silent input.
 
+    whisper_prompt is read from config.yaml on every call (mtime hot-reload).
+    When it is empty, initial_prompt is left unset.
+
     Args:
         audio_path: Path to the WAV file to transcribe.
         config: Application config dict (from config_loader.load_config).
+            Selects the model. The vocabulary prompt is re-read from disk.
 
     Returns:
         Transcribed text string.  Empty string if no speech detected.
     """
     model = _get_model(config)
     logger.info("faster-whisper: transcribing %s", os.path.basename(audio_path))
-    segments, info = model.transcribe(
-        audio_path,
-        vad_filter=True,
-        vad_parameters={
-            "min_silence_duration_ms": 500,
-            "min_speech_duration_ms": 150,
-        },
-        condition_on_previous_text=False,
-    )
+    prompt = config_loader.get_whisper_prompt()
+    if prompt:
+        logger.info("faster-whisper: initial_prompt set (%d chars)", len(prompt))
+    segments, info = model.transcribe(audio_path, **_transcribe_kwargs(prompt))
     text = " ".join(seg.text.strip() for seg in segments).strip()
 
     # Post-filter: catch residual hallucinations that VAD let through.
