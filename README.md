@@ -87,6 +87,7 @@ Edit `config/config.yaml` to adjust runtime settings:
 | `max_duration_seconds` | `120` | Maximum recording length |
 | `audio_device` | `null` | Input device (null = system default) |
 | `output_style` | varies | Reserved — persisted to config but not yet wired to transcription |
+| `whisper_prompt` | empty | Optional words for `small.en` (proper nouns, project names), passed as faster-whisper `initial_prompt`. Empty leaves transcription unchanged. Hot-reloads via mtime. |
 ---
 ## Architecture
 | Module | Responsibility |

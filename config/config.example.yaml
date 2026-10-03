@@ -10,3 +10,9 @@ inbox_path: C:/path/to/your/inbox
 query_inbox_path: C:/path/to/your/query/inbox
 output_style: formal
 rms_threshold: 0.001  # normalised int16 RMS; ~-60 dBFS — raise to skip quiet speech, lower to skip only dead silence
+# Optional vocabulary for the local small.en model (proper nouns, project
+# names, dialect words). Passed to faster-whisper as initial_prompt.
+# Leave empty — transcription is unchanged until this is set.
+# Example: "VoiceDesk, OnCall-Desk, St. Vincent, laggy, lagginess"
+# Re-read on the next transcription when this file's mtime changes.
+whisper_prompt: ""
