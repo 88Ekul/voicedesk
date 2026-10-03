@@ -50,6 +50,8 @@ class WhisperPromptTests(unittest.TestCase):
         config_loader._whisper_prompt_cache.clear()
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        # Monotonic mtime so successive writes cannot land on the same stamp.
+        self._mtime = 1_700_000_000.0
 
     def _write(self, body: str, name: str = "config.yaml") -> str:
         path = os.path.join(self._tmp.name, name)
@@ -58,8 +60,8 @@ class WhisperPromptTests(unittest.TestCase):
         return path
 
     def _bump(self, path: str) -> None:
-        later = os.stat(path).st_mtime + 10
-        os.utime(path, (later, later))
+        self._mtime += 10
+        os.utime(path, (self._mtime, self._mtime))
 
     def _transcribe(self, path: str, config: dict | None = None) -> dict:
         model = _FakeModel()
