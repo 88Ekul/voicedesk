@@ -194,3 +194,15 @@ need surfaced in building, not by speculation up front. Build sequence:
 (3) Second-Brain answer synthesis, (4) VoiceDesk second act — emit the richer
 fields synthesis has revealed a need for. See `docs/CONTRACT_STATUS_05_JUL.md`
 for the full cross-project note.
+
+### ADR-012 — Alt+Win uses explicit Alba-prefix gating
+Ctrl+Win remains ordinary dictation. Alt+Win is dual-purpose: an ordinary
+capture writes a note only, while an Alba-prefixed capture writes the cleaned
+note and then emits a query containing the same cleaned text. Matching is
+deterministic, prefix-only, and case-insensitive, with explicit separator
+boundaries; it uses neither fuzzy aliases nor an intent model. A recognised
+trigger with no remaining alphanumeric request is retained as the original
+note and does not emit an empty query. The query schema remains
+`{ query_text, captured_at, source }`, and VoiceDesk remains decoupled from
+Second Brain. Accepted trade-off: because `Alba` is a reserved opening prefix,
+a note beginning `Alba is...` is treated as a command.

@@ -12,6 +12,12 @@ _CORRECTIONS_PATH = os.path.join(_CONFIG_DIR, "corrections.json")
 _SNIPPETS_PATH = os.path.join(_CONFIG_DIR, "snippets.json")
 _FILLERS_PATH = os.path.join(_CONFIG_DIR, "fillers.json")
 
+_ALBA_COMMAND_RE = re.compile(
+    r"^\s*(?:hey\s+alba|alba)(?=$|[\s,.:;!?\u2013\u2014-])"
+    r"\s*(?:(?:[,;:!?]+|\.+(?=\s|$)|[-\u2013\u2014]+(?=\s|$))\s*)?",
+    re.IGNORECASE,
+)
+
 # Mtime cache: path -> (mtime_float, compiled_pattern | None, lookup_dict)
 _cache: dict[str, tuple[float | None, re.Pattern | None, dict[str, str]]] = {}
 
@@ -138,3 +144,13 @@ def apply_fillers(text: str) -> str:
     result = re.sub(r" {2,}", " ", result)
     result = re.sub(r" +\n", "\n", result)
     return result.strip()
+
+
+def extract_alba_request(text: str) -> str | None:
+    """Return a substantive Alba request, or None when this is a silent note."""
+    match = _ALBA_COMMAND_RE.match(text)
+    if match is None:
+        return None
+
+    request = text[match.end():]
+    return request if any(char.isalnum() for char in request) else None

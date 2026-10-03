@@ -33,6 +33,7 @@ Direct the assistant to read this folder at session start. Specifically:
 - `PROJECT_SPEC.md` for canonical state
 - The latest `HANDOVER_*.md` for current detail
 - `LEARNINGS.md` for accumulated findings
+- [`RELIABILITY_CAPTURE_PROTOCOL.md`](RELIABILITY_CAPTURE_PROTOCOL.md) for immediate recurrence capture and safe recovery
 
 ## Discipline
 

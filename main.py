@@ -322,8 +322,11 @@ def _process(audio_file: str, mode: str, paste_hwnd: int | None = None) -> None:
                 "inbox_path",
                 os.path.expanduser("~/Documents/inbox"),
             )
-            paste.save_to_inbox(text, inbox_path)
-            _write_query_json(text)
+            request = text_processing.extract_alba_request(text)
+            inbox_text = request if request is not None else text
+            paste.save_to_inbox(inbox_text, inbox_path)
+            if request is not None:
+                _write_query_json(request)
             _beep(660, 80)
             _beep(880, 80)
         else:
